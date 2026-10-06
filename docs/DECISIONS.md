@@ -296,7 +296,7 @@ Template:
 ## ADR-0015 — Agent-designed elements of the R0 preregistration v3
 
 - Date: 2026-10-06
-- Status: Accepted with amendments by ADR-0016 (owner, 2026-10-06; was Proposed)
+- Status: Accepted with amendments by ADR-0016 and ADR-0017 (owner, 2026-10-06; was Proposed)
 - Origin: agent (Claude Code)
 - Decision: Within ADR-0014, the agent chose:
   - **Events:** one displacement process with one cooldown; E1/E0 labelled by
@@ -319,7 +319,7 @@ Template:
 ## ADR-0016 — R0 v3: premise comparison, liquid frequency, open issues O1–O5
 
 - Date: 2026-10-06
-- Status: Accepted
+- Status: Accepted; premise statistic, support rule and settlement treatment amended by ADR-0017 (owner, 2026-10-06)
 - Origin: owner
 - Decision:
   - **Premise comparison (amends ADR-0015).** The decision-relevant E1-vs-E0
@@ -344,3 +344,37 @@ Template:
     Read-only API/RPC credentials are allowed under ADR-0013.
 - Consequences: Implemented in the R0 preregistration v3 §8.2, §8.3, §8.5,
   §8.6, §9 and §14.
+
+## ADR-0017 — R0 v3 fixes from the independent (Codex) review
+
+- Date: 2026-10-06
+- Status: Accepted
+- Origin: owner (adopting the required findings of the independent review of
+  `review/r0-v3` at 2eec52f)
+- Decision:
+  - **Settlement treatment.** Settlement-value events keep their place in
+    every decision denominator, but their decision SSTR is 0. A spread-free
+    payout measured against a taker-side base manufactures positive
+    "reversal". The payout-based value (SSTR_pay) is descriptive only.
+  - **Premise statistic (amends ADR-0016's no-regression restriction).** K3
+    requires both LCB(d) > 0 (bucket-reweighted difference) and LCB(β) > 0,
+    where β is the E1 coefficient in an OLS of SSTR₁₀ on bucket indicators,
+    one common linear Δ term and the E1 indicator, with the existing
+    market-cluster bootstrap. No other covariates, propensity scores,
+    matching models or ML.
+  - **Premise support (amends ADR-0016).** A bucket is supported iff it has
+    ≥ 30 distinct E1 markets and ≥ 30 distinct E0 markets. ≥ 80% of E1
+    events must lie in supported buckets. Bootstrap draws resample markets
+    jointly with full multiplicities and keep the supported set fixed. Any
+    draw with an empty supported cell or a rank-deficient fit, or failure of
+    support, makes the result UNDERPOWERED. This replaces the global
+    30-markets-per-group rule.
+  - **Liquid-market floor.** ≥ 30 distinct markets must contribute liquid E1
+    events, checked before outcomes; otherwise UNDERPOWERED. The
+    3-per-week frequency rule is separate and unchanged.
+  - **K0 completeness frame.** Completeness blocks are sampled from Polygon
+    block-number ranges for the pinned quarter bounds, independently of the
+    provider. Provider IDs may locate records but never define the
+    completeness universe.
+- Consequences: Implemented in the R0 preregistration v3 §1, §5.1–§5.3, §7,
+  §8.2, §8.3, §8.5, §8.6, §9 and §11. The hypothesis (UAFR) is unchanged.

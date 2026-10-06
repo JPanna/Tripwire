@@ -7,7 +7,7 @@
 | Status | Conditionally approved (ADR-0007, ADR-0014). **Not frozen. Not implemented.** No R0 outcome data has been computed or examined. |
 | Purpose | **Alpha scout.** A cheap, credible screen. Not publication-grade infrastructure |
 | Next step | Independent review, then owner-approved freeze (§6) |
-| Governing decisions | `docs/DECISIONS.md`: ADR-0006 to ADR-0010, ADR-0013, ADR-0014, ADR-0016 (owner); ADR-0011 (agent, Proposed); ADR-0015 (agent, accepted with amendments by ADR-0016) |
+| Governing decisions | `docs/DECISIONS.md`: ADR-0006 to ADR-0010, ADR-0013, ADR-0014, ADR-0016, ADR-0017 (owner); ADR-0011 (agent, Proposed); ADR-0015 (agent, accepted with amendments by ADR-0016 and ADR-0017) |
 
 **Markers**
 
@@ -77,7 +77,8 @@ winning share redeems for one unit of collateral; VERIFY@K0].
   (§5). E1 is the anomalous-flow event set (§4). Tested once on the holdout,
   one-sided, with a market-cluster bootstrap (§8).
 - **Premise comparison.** Among comparable displacements, anomalous-flow
-  events (E1) reverse more than non-anomalous ones (E0) (§8.3).
+  events (E1) reverse more than non-anomalous ones (E0): a bucket-reweighted
+  difference and an actual-Δ-adjusted E1 coefficient (§8.3).
 - **Magnitude screen.** Mean SSTR₁₀ against the owner-approved research
   screening thresholds, **1¢ kill / 2¢ continue**, applied to the **gross**
   trade-tape statistic (ADR-0008). These are screening thresholds, not
@@ -264,13 +265,19 @@ S_short events are reported descriptively and never enter a decision.
 1. If t_res ∈ (τ₀, τ₀+h] and no τ_b exists: flagged
    **settled-before-base**, SSTR_h = 0.
 2. Else if no τ_b exists: flagged **no-base**, SSTR_h = 0.
-3. Else if t_res ∈ (τ_b, τ₀+h]: X_h = v(m), the settlement value (§5.3).
+3. Else if t_res ∈ (τ_b, τ₀+h]: flagged **settlement-value**. The decision
+   SSTR_h = 0, and the event stays in every decision denominator. The
+   payout-based value s · (B − v(m)) is reported descriptively only as
+   **SSTR_pay** (§5.2, §5.3).
 4. Else X_h = P^s at the latest side-s print-second in (τ_b, τ₀+h]. If there
    is none, X_h = B, flagged **no-update** (SSTR_h = 0).
 
-**`SSTR_h = s · (B − X_h)`.** Positive means later same-side prints moved back
-toward the pre-move level. The **primary statistic** is the event-weighted
-mean of SSTR at h = 10 min (SSTR₁₀) over holdout E1 events.
+**`SSTR_h = s · (B − X_h)`** in case 4; 0 in cases 1–3. Positive means later
+same-side prints moved back toward the pre-move level. This decision SSTR is
+the one used everywhere in §8–§9: the primary statistic, the premise
+comparison, concentration and liquid calculations. The **primary
+statistic** is the event-weighted mean of SSTR at h = 10 min (SSTR₁₀) over
+holdout E1 events.
 
 **What the delayed base does and does not do** (owner-approved, ADR-0014):
 - It reduces regression-to-the-mean bias from selecting an extreme trigger
@@ -307,6 +314,8 @@ mean of SSTR at h = 10 min (SSTR₁₀) over holdout E1 events.
   formula and rate are [EXCERPT: Polymarket fees page], unverified). This shows
   the order of magnitude of taker fees only. It is not a cost model and never
   decides.
+- **SSTR_pay:** settlement-value events valued at the payout, s · (B − v(m)).
+  Never decides.
 - **Derived:** f = SSTR/Δ; P(f ≥ ½); P(f < 0); P(f ≤ −½); quantiles 1/5/25/
   75/95/99; and the shares of settled-before-base, no-base, no-update and
   settlement-value cases.
@@ -318,9 +327,13 @@ mean of SSTR at h = 10 min (SSTR₁₀) over holdout E1 events.
 - **v(m)** = the reference outcome's payout fraction (payout numerator ÷ sum of
   numerators). The `outcome_seq` ↔ CTF outcome-slot mapping is checked at K0.
 - Metadata is never used for t_res or v(m).
-- A settlement value carries a mechanical half-spread relative to a taker-side
-  base [INFERENCE]. Its share is reported, and results excluding
-  settlement-value events are a robustness summary.
+- A settlement value has no spread, while the base B is a taker-side print.
+  Under a fair-value martingale, a payout reference therefore yields an
+  expected positive "reversal" equal to the base's spread premium, with no
+  subsequent reversal. This can also differ between E1 and E0. For this
+  reason, settlement-value events have **decision SSTR = 0** (§5.1, case 3)
+  and their payout-based value (SSTR_pay) is descriptive only. Their share is
+  reported.
 
 ---
 
@@ -402,11 +415,21 @@ population reconstruction.
 
 **Sample** (seed 20261005). Strata: calendar quarters 2025Q1 → 2026Q2 (6
 strata), Standard Binary markets only.
-- **Completeness:** 20 random blocks per stratum containing ≥ 1 fill emitted
-  by the V1 CTF Exchange, the Standard Binary venue [INFERENCE; VERIFY@K0].
-  All economic fills from that contract in each block are compared with
-  `daily_aligned/`. `OrderFilled.id` (block number, log index) may be used to
-  locate logs.
+- **Completeness:** 20 blocks per stratum, drawn **independently of the
+  provider**.
+  - **Frame:** each stratum's block-number range is fixed from Polygon block
+    headers for the pinned UTC quarter bounds.
+  - **Draws:** block numbers are drawn uniformly at random from that range.
+    The block's logs are fetched from Polygon, and the block is retained only
+    if it contains ≥ 1 independently verified eligible fill from the V1 CTF
+    Exchange, the Standard Binary venue [INFERENCE; VERIFY@K0]. Draws continue
+    until 20 blocks are retained.
+  - **Comparison:** all economic fills from that contract in each retained
+    block are compared with `daily_aligned/`.
+  - Provider data (e.g. `OrderFilled.id` block number and log index) may be
+    used to locate matching provider records, but **never defines the
+    completeness universe**. Blocks or days missing from the provider layers
+    must still be eligible for selection.
 - **Precision:** 50 random `daily_aligned/` rows per stratum, drawn before any
   validity filtering, each reconciled against its block.
 - **Resolution:** 100 random markets with a `CTF/` resolution, and 100 random
@@ -459,32 +482,57 @@ Evaluated from counts before outcomes, in exploration and again at the start
 of the holdout run. The result is UNDERPOWERED if any of these hold:
 - fewer than **200** E1 events;
 - fewer than **50** markets with E1 events;
-- in the premise comparison (§8.3), fewer than **30** markets in either the
-  E1 or the E0 group;
-- in the premise comparison, fewer than **80%** of E1 events lie in Δ
-  buckets that contain at least one E0 event (common support). The premise
-  comparison is then not sufficiently identified for this scout.
+- **premise support:** fewer than **80%** of E1 events lie in **supported
+  buckets** (§8.3);
+- **premise identification:** the §8.3 regression is rank-deficient on the
+  observed sample, or **any** of the B bootstrap draws has an empty supported
+  cell (a supported bucket without E1 or without E0 events) or a
+  rank-deficient regression;
+- **liquid markets:** fewer than **30** distinct markets contribute liquid E1
+  events (§8.5).
+
+All of these depend only on event membership, displacement, labels and
+liquidity, never on outcomes. They are evaluated before outcomes are
+computed.
 
 ### 8.3 Premise comparison (E1 vs E0)
 
 - **Events used:** **all** eligible E1 and E0 events. SSTR₁₀ follows exactly
-  the primary statistic's zero and settlement rules (§5.1): settled-before-base,
-  no-base and no-update events count as 0, and settlement values are
-  included. No event is dropped based on post-event activity. Zero rates are
+  the primary statistic's decision rules (§5.1): settled-before-base,
+  no-base, no-update and settlement-value events count as 0. No event is
+  dropped based on post-event activity. Zero rates are
   reported by group.
 - **Δ buckets** (fixed): [0.05, 0.075) · [0.075, 0.10) · [0.10, 0.15) ·
   [0.15, 0.20) · [0.20, 0.30) · [0.30, 1].
-- **Statistic:** d = Σ_b w_b · (mean SSTR₁₀ of E1 in b − mean SSTR₁₀ of E0 in
-  b), with w_b = E1's share of events in bucket b. This reweights E0 to E1's
-  displacement mix. Buckets with no E0 events are dropped and w is
-  renormalized; this is reported.
-- **Inference:** LCB(d) from the §8.1 bootstrap, resampling markets with all
-  their E1 and E0 events.
-- **Common support:** the 80% rule of §8.2 is checked from counts before
-  outcomes. If it fails, the result is UNDERPOWERED, not KILL.
+- **Supported buckets:** a bucket is supported iff it contains events from at
+  least **30 distinct E1 markets and 30 distinct E0 markets**. The supported
+  set is fixed on the observed sample being evaluated (exploration or
+  holdout) and does not change across
+  bootstrap draws. Both statistics below use only events in supported
+  buckets. At least 80% of E1 events must lie in supported buckets (§8.2).
+- **Statistic 1 (reweighted difference):** d = Σ_b w_b · (mean SSTR₁₀ of E1 in
+  b − mean SSTR₁₀ of E0 in b), over supported buckets b, with w_b = E1's share
+  of supported-bucket E1 events in b. This reweights E0 to E1's bucket mix.
+- **Statistic 2 (actual-Δ adjustment):** β from the ordinary-least-squares
+  fit, over supported-bucket events, of
+  `SSTR₁₀ = Σ_b α_b · 1[bucket = b] + γ · Δ + β · 1[E1] + ε`
+  (bucket indicators, one common linear Δ term, and the E1 indicator; no
+  other covariates). This removes within-bucket displacement differences
+  between E1 and E0. Without it, a generic reversal law (e.g. SSTR = ½·Δ)
+  combined with larger E1 displacements inside a bucket would produce d > 0.
+- **Inference:** the §8.1 market-cluster bootstrap. Each draw resamples
+  markets jointly, with all their E1 and E0 events and full multiplicities,
+  keeps the supported-bucket set fixed, and recomputes the bucket means, the
+  E1 weights w_b, d and β. LCB(d) and LCB(β) are the 5th percentiles. Draws
+  are never discarded; an empty supported cell or a rank-deficient fit in
+  any draw makes the premise comparison UNDERPOWERED (§8.2).
+- **Decision:** the premise is supported iff **LCB(d) > 0 and LCB(β) > 0**
+  (K3).
+- **Identification:** failure of support or identification (§8.2) gives
+  UNDERPOWERED, not KILL.
 - **Descriptive only:** the same comparison restricted to events with a
-  measured SSTR₁₀ (cases 3–4 of §5.1) is reported in §8.6. It never decides
-  K3.
+  measured SSTR₁₀ (case 4 of §5.1, an actual later print) is reported in
+  §8.6. It never decides K3.
 
 ### 8.4 Concentration
 
@@ -502,12 +550,16 @@ then recompute LCB(mean SSTR₁₀).
   phenomena too rare to justify further data infrastructure; capacity is not
   known at this stage.
 - **Effect:** LCB(mean SSTR₁₀) over holdout liquid E1 events.
+- **Liquid-market floor:** at least 30 distinct markets must contribute liquid
+  E1 events, otherwise UNDERPOWERED (§8.2, checked before outcomes). The
+  3-per-week frequency requirement is separate and unchanged.
 
 ### 8.6 Exploratory robustness summaries (reported; never decide)
 
 - Other horizons; the §4.2 robustness variants.
 - Market-equal weighting.
-- Excluding settlement-value events; excluding settled-before-base events.
+- Payout-based SSTR_pay for settlement-value events; excluding
+  settlement-value events; excluding settled-before-base events.
 - Sub-periods before and after the reported fee rollout around 2026-03-06
   [EXCERPT: Polymarket fees page].
 - Segments, marginal only: Δ bucket; anchor price (tails vs middle);
@@ -525,7 +577,7 @@ then recompute LCB(mean SSTR₁₀).
 | 0 | Minimum sample fails (§8.2) | **UNDERPOWERED** |
 | K1 | Mean SSTR₁₀ ≤ 0, or LCB(mean SSTR₁₀) ≤ 0 | **KILL** |
 | K2 | Mean SSTR₁₀ < 0.01 (1¢) | **KILL** |
-| K3 | Premise: LCB(d) ≤ 0 (§8.3) | **KILL** (UAFR premise unsupported) |
+| K3 | Premise: LCB(d) ≤ 0 or LCB(β) ≤ 0 (§8.3) | **KILL** (UAFR premise unsupported) |
 | K4 | Concentration: LCB ≤ 0 after removing the top k markets (§8.4) | **KILL** |
 | K5 | Liquid frequency < 3 per week, or liquid LCB ≤ 0 (§8.5) | **KILL** |
 | I1 | 0.01 ≤ mean SSTR₁₀ < 0.02 (between 1¢ and 2¢) | **INCONCLUSIVE** |
@@ -589,7 +641,7 @@ preregistrations. Once run, it is spent for UAFR and all its variants.
 | Bid–ask bounce | Same-side Δ, σ̂ and SSTR; RAW0 diagnostic |
 | Metadata snapshot (end dates edited later, tags added) | Used only for S_short and descriptive segments; never for events (a)–(f), t_res or v(m) |
 | Resolution outcome | Used only as a realized value inside the horizon, from on-chain `CTF/` data |
-| Dropping markets that settle inside the horizon | Settlement-inclusive; zero-rule cases flagged and counted |
+| Dropping markets that settle inside the horizon; payout references manufacturing reversal | Settling events stay in every denominator with decision SSTR = 0 (§5.1, §5.3); SSTR_pay descriptive; zero-rule cases flagged and counted |
 | Percentage returns on low prices | Probability-unit differences only |
 | Stale forward-filled prices | Zero rules flagged; no forward-filled prices used as the base |
 | Provider cleaning | Independent rule and K0 (§7) |
@@ -677,7 +729,10 @@ data/exploration/  data/holdout/                         # gitignored
   simulated-power gates, decisiveness gates, and fee-schedule gates.
 - Changed:
   - E1 and E0 are labels within one displacement process;
-  - the premise comparison is Δ-bucket-reweighted on measured events;
+  - the premise comparison uses all eligible events, with bucket reweighting
+    plus an actual-Δ adjustment over supported buckets (ADR-0016, ADR-0017);
+  - settlement-value events have decision SSTR = 0, and their payout-based
+    value is descriptive (ADR-0017);
   - the magnitude screen uses gross SSTR₁₀ (v2: fee-adjusted), with fees as a
     descriptive illustration only;
   - the decision table is one screen;
