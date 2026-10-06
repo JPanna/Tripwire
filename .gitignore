@@ -1,0 +1,73 @@
+# --- Secrets and credentials (never commit) ---
+.env
+.env.*
+secrets/
+*.pem
+*.key
+*.p12
+*.pfx
+*.keystore
+*.secret
+*credentials*.json
+*wallet*.json
+keystore/
+mnemonic*
+
+# --- Data, logs and local state (never commit raw/derived market data) ---
+data/
+logs/
+*.log
+
+# --- Local databases ---
+*.db
+*.sqlite
+*.sqlite3
+*.duckdb
+*.duckdb.wal
+*.db-journal
+*.db-wal
+*.db-shm
+
+# --- Python virtual environments ---
+.venv/
+venv/
+env/
+ENV/
+
+# --- Python caches and build artifacts ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+build/
+dist/
+*.egg-info/
+.eggs/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.pyre/
+.pytype/
+.hypothesis/
+.coverage
+.coverage.*
+htmlcov/
+.tox/
+.nox/
+.ipynb_checkpoints/
+
+# --- IDE / editor ---
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+.project
+.settings/
+*.sublime-*
+
+# --- OS junk ---
+.DS_Store
+Thumbs.db
+desktop.ini
+.directory
