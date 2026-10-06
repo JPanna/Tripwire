@@ -232,3 +232,92 @@ def test_malformed_structured_metadata_is_rejected_everywhere(data_root, case):
 )
 def test_structured_string_rules(value, expected):
     assert project_tokens(value) == expected
+
+
+# --- Codex final check: a selected label/name/slug must be plain scalar text ---
+
+MARK = "FORBIDDEN"
+NESTED_VALUES = {
+    "malformed-object": '{"scheduled_end":"' + MARK + '"',
+    "valid-object": '{"scheduled_end":"' + MARK + '"}',
+    "malformed-array": '["' + MARK + '"',
+    "valid-array": '["' + MARK + '"]',
+}
+CONTAINERS = ("native-dict", "json-dict", "native-list", "json-list")
+
+
+def _container(kind: str, obj: dict):
+    return {
+        "native-dict": obj,
+        "json-dict": json.dumps(obj),
+        "native-list": [obj],
+        "json-list": json.dumps([obj]),
+    }[kind]
+
+
+def _artifacts(data_root, name: str, category) -> tuple[object, dict, str, str]:
+    """Run collect / build_vocab / evaluate_draft / Markdown on one market."""
+    from conftest import load_script
+
+    native = isinstance(category, (dict, list))
+    t = pa.table(
+        {
+            "block_timestamp": pa.array([T0], pa.int64()),
+            "condition_id": ["m1"],
+            "question": ["Some question"],
+            "category": [category] if native else pa.array([category], pa.string()),
+            "tags": pa.array([[]], pa.list_(pa.string())),
+        }
+    )
+    p = write_parquet(data_root / "raw" / f"{name}.parquet", t)
+    col = collect([p], COLS)
+    vocab = build_vocab(col, COLS)
+    ev = evaluate_draft(col, DraftClassifier(frozenset({"crypto"}), None, None, "x"))
+    md = load_script("01_schema.py").render_vocab_md(vocab, COLS)
+    return vocab, ev, json.dumps([vars(vocab), col.by_market], default=str), md
+
+
+@pytest.mark.parametrize("container", CONTAINERS)
+@pytest.mark.parametrize("value", list(NESTED_VALUES))
+@pytest.mark.parametrize("key", ["label", "name", "slug"])
+def test_structured_selected_value_is_rejected(data_root, key, value, container):
+    category = _container(container, {key: NESTED_VALUES[value]})
+    assert project_tokens(category) == ([], 1)
+    vocab, ev, vocab_json, md = _artifacts(data_root, f"{key}-{value}-{container}", category)
+    audit = json.dumps(ev)
+    for text in (vocab_json, md, audit):
+        assert MARK not in text and "scheduled_end" not in text
+    assert vocab.rejected_metadata_parts == 1
+    assert vocab.category_counts == [] and ev["matched_tag_only"] == 0
+
+
+@pytest.mark.parametrize("container", CONTAINERS)
+@pytest.mark.parametrize("key", ["label", "name", "slug"])
+def test_plain_scalar_control_still_projects(data_root, key, container):
+    category = _container(container, {key: "Crypto"})
+    assert project_tokens(category) == (["Crypto"], 0)
+    vocab, ev, vocab_json, md = _artifacts(data_root, f"ok-{key}-{container}", category)
+    assert dict(vocab.category_counts) == {"Crypto": 1} and vocab.rejected_metadata_parts == 0
+    assert ev["matched_tag_only"] == 1 and "Crypto" in md
+
+
+@pytest.mark.parametrize("container", CONTAINERS)
+@pytest.mark.parametrize("value", list(NESTED_VALUES))
+@pytest.mark.parametrize("first,second", [("label", "name"), ("label", "slug"), ("name", "slug")])
+def test_no_fallback_to_a_later_key(data_root, first, second, value, container):
+    category = _container(container, {first: NESTED_VALUES[value], second: "Crypto"})
+    assert project_tokens(category) == ([], 1)  # rejected once, "Crypto" not used
+    vocab, ev, vocab_json, md = _artifacts(
+        data_root, f"prec-{first}-{second}-{value}-{container}", category
+    )
+    assert vocab.rejected_metadata_parts == 1 and vocab.category_counts == []
+    for text in (vocab_json, md, json.dumps(ev)):
+        assert MARK not in text
+
+
+@pytest.mark.parametrize("value", ["Crypto", "Politics", "Bitcoin", "btc-price"])
+def test_ordinary_values_unchanged(value):
+    assert project_tokens(value) == ([value], 0)
+    for key in ("label", "name", "slug"):
+        assert project_tokens({key: value}) == ([value], 0)
+        assert project_tokens(json.dumps([{key: value}])) == ([value], 0)

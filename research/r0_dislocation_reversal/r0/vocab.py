@@ -24,10 +24,12 @@ counts, examples and the draft-classifier audit:
   - a string is one token; a string starting with ``{`` or ``[`` declares
     itself structured: it is parsed as JSON and projected by the rules below,
     and if it is not valid JSON the whole value is rejected (never published);
-  - an object (dict/struct) contributes exactly one token: the value of the
-    first of ``label``, ``name``, ``slug`` that is a non-empty string. No other
-    key is ever read. An object without such a key contributes nothing and is
-    counted as rejected;
+  - an object (dict/struct) contributes at most one token: the value of the
+    first of ``label``, ``name``, ``slug`` that is present, and only if that
+    value is plain scalar text (``_scalar_token``: a non-empty string not
+    starting with ``{`` or ``[``; such a value is never parsed). Otherwise the
+    object is rejected, with no fallback to a later key. No other key is ever
+    read;
   - a list contributes the tokens of its string and object elements; nested
     lists, numbers and booleans are rejected;
   - anything else is rejected.
@@ -79,12 +81,37 @@ def market_order_key(market_id: str, salt: str = SAMPLE_SALT) -> str:
     return hashlib.sha256(f"{salt}|{market_id}".encode()).hexdigest()
 
 
+def _is_structured_looking(text: str) -> bool:
+    return text.lstrip().startswith(("{", "["))
+
+
+def _scalar_token(value: object) -> str | None:
+    """The authorization boundary for one category/tag token.
+
+    A token is plain, non-empty scalar text. Anything else -- non-strings, and
+    text starting with ``{`` or ``[`` (valid, malformed or truncated JSON
+    alike) -- is not a token; such text is never parsed further here.
+    """
+    if not isinstance(value, str):
+        return None
+    text = value.strip()
+    if not text or _is_structured_looking(text):
+        return None
+    return text
+
+
 def _object_token(d: dict) -> list[str] | None:
-    for k in LABEL_KEYS:
-        v = d.get(k)
-        if isinstance(v, str) and v.strip():
-            return [v.strip()]
-    return None
+    """The object's single authorized token, or None (object rejected).
+
+    The key is selected by precedence alone: the first of ``label``, ``name``,
+    ``slug`` that is present. Its value must pass ``_scalar_token``; if it
+    does not, the object is rejected -- there is no fallback to a later key.
+    """
+    key = next((k for k in LABEL_KEYS if d.get(k) is not None), None)
+    if key is None:
+        return None
+    tok = _scalar_token(d[key])
+    return [tok] if tok is not None else None
 
 
 def project_tokens(value: object, *, _in_list: bool = False) -> tuple[list[str], int]:
@@ -93,7 +120,7 @@ def project_tokens(value: object, *, _in_list: bool = False) -> tuple[list[str],
         return [], 0
     if isinstance(value, str):
         s = value.strip()
-        if s.startswith(("[", "{")):
+        if _is_structured_looking(s):
             # The string declares itself structured data. Only valid JSON is
             # projected; anything else is rejected whole: no repair, no partial
             # parse, and the original text is never published.
@@ -104,7 +131,8 @@ def project_tokens(value: object, *, _in_list: bool = False) -> tuple[list[str],
             if not isinstance(parsed, (dict, list)):
                 return [], 1
             return project_tokens(parsed, _in_list=_in_list)
-        return ([s], 0) if s else ([], 0)
+        tok = _scalar_token(s)
+        return ([tok], 0) if tok is not None else ([], 0)
     if isinstance(value, dict):
         tok = _object_token(value)
         return (tok, 0) if tok else ([], 1)

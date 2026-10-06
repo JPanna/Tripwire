@@ -159,7 +159,9 @@ tokens immediately after reading; an object contributes only its `label`,
 `name` or `slug` string (in that order). Other nested fields are never read
 into any output; unsupported shapes are counted as rejected and dropped. A
 string starting with `{` or `[` must be valid JSON; otherwise the whole value
-is rejected and its text is never published.
+is rejected and its text is never published. The selected `label`/`name`/`slug`
+value must itself be plain text: if it starts with `{` or `[` the object is
+rejected (never parsed, no fallback to a later key).
 
 **Manifest placement authority.** Every consumer (download, `--verify`,
 schema, vocab, domain checks) loads the manifest through one function,
