@@ -404,3 +404,168 @@ Template:
 - Consequences: The holdout (2025-10-08 → 2026-04-27) remains unopened. The
   `--holdout` run happens only once, at a later frozen analysis commit
   approved by the owner (§6 step 3).
+
+## ADR-0019 — R0 implementation tooling (Stages A–C onward)
+
+- Date: 2026-10-06
+- Status: Accepted
+- Origin: owner (approval of the R0 implementation plan, 2026-10-06)
+- Context: ADR-0009 requires a decision entry for any dependency beyond its
+  list. The plan proposed ruff and a hand-written Keccak-256.
+- Decision:
+  - **ruff** is approved as a development-only lint/format dependency. No
+    mypy.
+  - Dependencies are added only in the stage that uses them. Stages A–C use
+    `polars` and `pyarrow` (runtime) and `pytest`, `ruff` (dev). NumPy, SciPy
+    and matplotlib are added when a stage uses them.
+  - **Keccak-256 is not hand-implemented.** Python's `hashlib.sha3_256` is
+    NIST SHA-3, not Ethereum Keccak. Stage D (K0) will use a small, mature
+    Ethereum-compatible implementation, preferably `eth-hash`, or an equally
+    narrow established package. The full web3 stack is not added for
+    hashing. `eth-hash` needs a backend package; the exact package pair is
+    recorded when Stage D adds it.
+- Consequences: Stages A–C add no hashing dependency. The project is a uv
+  project at the repository root (`pyproject.toml`, `uv.lock`,
+  `.python-version` = 3.12), not an installable package.
+
+## ADR-0020 — R0 implementation: owner rulings on the plan's blockers and clarifications
+
+- Date: 2026-10-06
+- Status: Accepted
+- Origin: owner
+- Context: The R0 implementation plan (conditionally approved 2026-10-06)
+  listed BLOCKER-1, BLOCKER-2 and clarifications C-3 to C-7 against the
+  frozen preregistration (`287afbe`, ADR-0018).
+- Decision:
+  - **Scope now:** only Stages A–C (project foundation; dataset listing,
+    acquisition and pinning infrastructure; schema and metadata inspection).
+    No event detection, outcomes, statistics or K0 outcome-related logic.
+  - **BLOCKER-1 (S_short regex and crypto tag set unspecified).** Confirmed
+    as a real preregistration gap. Stage C may inspect only the metadata
+    vocabulary needed to define it, from exploration-period markets only:
+    schema information, unique category/tag values, and question/slug
+    strings, solely to design and audit the classifier. The agent then
+    proposes a deterministic classifier and a small amendment. **No event
+    detection may be implemented or run until S_short is resolved and the
+    amended specification is re-frozen.**
+  - **BLOCKER-2 (required schema roles).** If a required role is genuinely
+    missing or ambiguous: STOP and report the role, the available fields, why
+    the frozen rule cannot be implemented, and the smallest amendment or
+    workaround. Never silently substitute another field.
+  - **C-3 (K0 reads holdout-period samples).** Approved in principle, but K0
+    gets its **own validation-only code path and flag**; the research
+    `--holdout` flag is not overloaded. K0 may read only the preregistered K0
+    sample from holdout-period dates and computes no event or outcome
+    statistics. Specified when Stage D is implemented.
+  - **C-4.** In exploration, any §8.2 minimum-sample or common-support failure
+    is an UNDERPOWERED terminal stop.
+  - **C-5 (holdout step 0).** The holdout workflow is: counts and support
+    checks → if any fails, UNDERPOWERED and **STOP without computing
+    outcomes** → otherwise compute outcomes once. This is the intended
+    reading of the sequential §6/§9 decision process.
+  - **C-6.** The final K0 quarterly stratum (2026Q2) ends at the actual
+    pinned dataset-end block/date, not 2026-06-30. Completeness is never
+    evaluated outside the dataset's coverage.
+  - **C-7.** Exploration KILL or UNDERPOWERED stops are terminal unless the
+    owner explicitly authorizes a new research decision.
+  - **Data partitioning.** An immutable raw-source cache plus
+    timestamp-derived research partitions. The pre-holdout partition (which
+    holds the exploration data; terminology per ADR-0022) is derived once,
+    pinned and hashed, and never rebuilt or replaced during the holdout run; after the analysis freeze the holdout partition is built by
+    the same frozen loader. A source file that straddles the boundary is
+    split mechanically by row timestamp (not assigned wholesale to holdout),
+    and research code is prevented from reading holdout rows.
+- Consequences: The plan's commit order changes: the S_short amendment and its
+  re-freeze precede any event-detection commit. ADR-0021 records how Stages
+  A–C implement the partitioning and the guard.
+
+## ADR-0021 — R0 Stages A–C: raw cache, pre-holdout access boundary and holdout guard
+
+- Date: 2026-10-06
+- Status: Accepted (owner, 2026-10-06, with the terminology clarification in
+  ADR-0022; was Proposed)
+- Origin: agent (Claude Code, implementing ADR-0020)
+- Context: ADR-0020 requires timestamp-derived partitions and a guard that
+  keeps holdout rows away from research code, without losing pre-holdout rows
+  from files that straddle the boundary.
+- Decision:
+  - **Access-control boundary:** a row is **holdout-side** iff its
+    `block_timestamp` ≥ 2025-10-08T00:00:00Z (the holdout start, §6). Every
+    earlier row is **PRE-HOLDOUT**: trailing rows (from 2024-12-30), the
+    exploration period and the embargo. PRE-HOLDOUT is a low-level
+    access-control notion only and is not the exploration period (ADR-0022).
+    `CTF/` rows are split by the same rule.
+  - **Raw cache:** `data/raw/<owner>__<name>@<revision-sha>/<repo path>`,
+    files verified against the manifest's size and hash (LFS SHA-256, or the
+    git blob SHA-1 for non-LFS files) and made read-only. Downloading a
+    holdout-dated raw file is not reading it.
+  - **Single reader:** `r0/rawread.py` is the only code that parses Parquet
+    (enforced by a static AST/text test). Its `PRE_HOLDOUT` scope returns only
+    pre-holdout rows: row groups whose timestamp statistics start at or after
+    the boundary are never read; remaining rows are filtered by timestamp;
+    null timestamps are dropped; timestamps that are not plausible epoch
+    seconds are refused. The `HOLDOUT` scope needs a `HoldoutAuthorization`,
+    which only `authorize_holdout(True, ...)` creates from an explicit flag;
+    no Stage A–C script calls it (enforced by a test). `data/holdout/` and
+    `data/raw/` paths are guarded including through symlinked files or
+    directories.
+  - **Footer-only reads** (column names/types, row counts, and the timestamp
+    column's min/max statistics) are permitted for every file, because file
+    placement and schema checks need them and they contain no outcome values.
+    No other column statistic is exposed.
+  - **Manifest:** written only after a footer probe, so file placement never
+    rests on file names alone. Download requires the exact byte total of the
+    requested part (`--approve-bytes`). Upstream paths are validated before
+    use; the HF token is sent only over HTTPS to the configured endpoint host.
+  - **Placement:** a needed file whose footer probe fails or whose timestamp
+    statistics are incomplete is never assigned wholesale to one side: it is
+    "unverified", joins the pre-holdout download part, and its rows are split
+    at read time. The manifest is not written with such files unless the
+    owner passes `--accept-unverified`.
+  - **Role mapping:** a role is FOUND only when a column has exactly the name
+    the frozen preregistration uses for it in `daily_aligned/` or `CTF/`
+    (names the spec gives only to `OrderFilled/`, such as `token_amount` and
+    `id`, are not used). Any other plausible column is a candidate that the
+    owner must confirm (`--confirm role=column`, or `role=NONE` for "no such
+    column"), recorded in the schema report. Unresolved required roles are
+    reported as SPEC IMPLEMENTATION BLOCKERS (exit code 3). A possible
+    share-quantity column blocks the §3 `usdc_amount / price` fallback until
+    the owner decides it.
+- Consequences: Pre-holdout derived data can be built from straddling files
+  without losing rows. The guard is a code contract plus tests, not an
+  operating-system barrier; it relies on all research code using
+  `r0.rawread`.
+
+## ADR-0022 — PRE-HOLDOUT vs EXPLORATION terminology; domain checks
+
+- Date: 2026-10-06
+- Status: Accepted
+- Origin: owner (before committing Stages A–C as an implementation review
+  candidate)
+- Context: ADR-0021 as first drafted called every row before the holdout
+  "exploration-side", which conflates access control with the exploration
+  period. The optional `--domain-checks` needed an explicit scope.
+- Decision:
+  - **PRE-HOLDOUT** (low-level access control) = `block_timestamp` <
+    2025-10-08T00:00:00Z. It includes the exploration period (2025-01-01 ..
+    2025-09-30) and the embargo (2025-10-01 .. 2025-10-07). The entire
+    pre-holdout range is **not** called "exploration".
+  - **EXPLORATION** (research operations) = 2025-01-01T00:00:00Z ..
+    2025-09-30T23:59:59Z only. S_short vocabulary inspection, classifier
+    auditing, the optional domain checks and all exploration analysis use the
+    exploration period only.
+  - Embargo rows may later be used only for purposes the frozen specification
+    authorizes, such as trailing inputs and cooldown continuity.
+  - **`--domain-checks`** is approved, but runs only after the schema roles
+    are confirmed (no blockers). It reads EXPLORATION-period rows only and
+    reports aggregate data-quality checks only: null/malformed counts,
+    `p_event` outside its domain, `D` outside {−1, +1}, non-positive
+    quantities/amounts, invalid timestamps, and obvious schema/domain
+    violations. It must not compute or expose candidate events, future
+    returns, post-event price paths, SSTR/SSTR0/RAW0/DTCP, reversal
+    statistics, holdout rows, or anything that can reveal the R0 answer.
+- Consequences: Code and docs use `Scope.PRE_HOLDOUT`, manifest side
+  `pre_holdout` and download part `pre-holdout` for access control, and
+  restrict research operations to the exploration period. The Stage A–C
+  commit is an implementation review candidate, not a new preregistration
+  freeze.

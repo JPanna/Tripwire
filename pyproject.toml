@@ -1,0 +1,36 @@
+[project]
+name = "tripwire-research"
+version = "0.0.0"
+description = "Tripwire research code (R0 UAFR). Not a trading system."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+# ADR-0009. Add further dependencies only in the stage that uses them, with a
+# decision entry where ADR-0009 requires one.
+dependencies = [
+    "polars~=2.0",
+    "pyarrow~=25.0",
+]
+
+[dependency-groups]
+# ADR-0019: dev-only tooling.
+dev = [
+    "pytest~=9.1",
+    "ruff~=0.16",
+]
+
+[tool.uv]
+# Research scripts and a test suite, not an installable package.
+package = false
+
+[tool.pytest.ini_options]
+pythonpath = ["research/r0_dislocation_reversal"]
+testpaths = ["research/r0_dislocation_reversal/tests"]
+addopts = "-ra --strict-markers"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["research/r0_dislocation_reversal"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP"]

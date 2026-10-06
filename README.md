@@ -15,8 +15,8 @@ from generic price prediction.
 
 | Item | Status |
 | --- | --- |
-| Stage | **M0** done (governance documents). **R0** research design conditionally approved, under independent review, not implemented |
-| Code | None. No data ingestion, no backtester, no strategy code |
+| Stage | **M0** done (governance documents). **R0** preregistration frozen (ADR-0018); implementation Stages A–C only (ADR-0020) |
+| Code | R0 Stages A–C: dataset listing/pinning and schema/metadata inspection (read-only). No event detection, no backtester, no strategy code |
 | Production trading | **Does not exist.** No order submission, no API keys, no wallets |
 | Profitability | **Not demonstrated.** No hypothesis has been tested yet |
 | Live-trading legality for the project owner | **Not established.** Must be verified separately before any live work (see `docs/RISK_INVARIANTS.md`) |

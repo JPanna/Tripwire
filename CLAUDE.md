@@ -17,10 +17,16 @@ correct. Trying to falsify a hypothesis is the job.
 
 ## Current stage
 
-- M0 (docs only) done. R0 is **conditionally approved but not implemented**.
-  Its preregistration (`research/r0_dislocation_reversal/PREREGISTRATION.md`,
-  v3 alpha scout, ADR-0014) awaits independent review. Write no R0 code and
-  inspect no R0 outcome data until the owner explicitly says to start.
+- M0 (docs only) done. The R0 preregistration
+  (`research/r0_dislocation_reversal/PREREGISTRATION.md`, v3 alpha scout) is
+  **frozen** (ADR-0018, commit `287afbe`); never edit it.
+- R0 implementation: only Stages A–C are authorized (ADR-0020): project
+  foundation, dataset listing/pinning, schema and exploration-only metadata
+  inspection. No event detection, outcomes, statistics or K0 until the owner
+  authorizes them, and no event detection before the S_short amendment is
+  re-frozen. Inspect no R0 outcome data; holdout rows only via the guard
+  (ADR-0021). Research operations use the exploration period only; the wider
+  pre-holdout range is an access-control notion (ADR-0022).
 - A V1-era Polymarket result alone never graduates a strategy toward execution
   (ADR-0010).
 - Never start a later milestone early. If a task seems to need one, stop and ask.

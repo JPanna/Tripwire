@@ -1,0 +1,37 @@
+# S_short metadata classifier — DRAFT v0. NOT FROZEN. NOT USED BY EVENT LOGIC.
+#
+# Status: placeholder for the Stage C audit loop (01_schema.py vocab
+# --classifier ...). The values below are an [ASSUMPTION] based on how
+# Polymarket crypto-price markets are commonly titled (e.g. "Bitcoin Up or
+# Down - <date>, <time> ET", "Bitcoin above <price> on <date>?"). They were
+# NOT derived from this dataset: Hugging Face is unreachable from the agent's
+# environment (2026-10-06). They must be replaced by values derived from the
+# exploration-only vocabulary run, then audited, before an amendment is
+# proposed for freeze.
+#
+# Semantics (proposed for the amendment):
+# - tag_values: compared case-insensitively (str.casefold) with each trimmed
+#   token of the market's category and tags fields (JSON lists are parsed;
+#   objects contribute their label/slug/name).
+# - question_regex / slug_regex: Python 3.12 `re`, IGNORECASE, `re.search`.
+# - metadata condition = tag match OR question match OR slug match.
+# - S_short additionally needs (scheduled end - tau_first) <= 24 h (§4.3),
+#   which this file does not change and Stage C does not evaluate.
+# Design bias: recall over precision. A missed short crypto market enters the
+# decision population; a false positive only removes a market from it, and
+# the 24 h duration condition already removes most false positives.
+
+tag_values = [
+  "crypto",
+  "cryptocurrency",
+  "crypto prices",
+  "bitcoin",
+  "ethereum",
+  "solana",
+  "xrp",
+  "dogecoin",
+]
+
+question_regex = '\b(bitcoin|btc|ethereum|ether|eth|solana|xrp|ripple|dogecoin|doge|bnb|cardano|litecoin|chainlink|avalanche|avax|polkadot|hyperliquid|shiba|pepe|crypto|cryptocurrency)\b'
+
+slug_regex = '(^|-)(bitcoin|btc|ethereum|eth|solana|sol|xrp|ripple|dogecoin|doge|bnb|cardano|litecoin|chainlink|avalanche|avax|polkadot|hyperliquid|crypto)(-|$)'
