@@ -378,3 +378,29 @@ Template:
     completeness universe.
 - Consequences: Implemented in the R0 preregistration v3 §1, §5.1–§5.3, §7,
   §8.2, §8.3, §8.5, §8.6, §9 and §11. The hypothesis (UAFR) is unchanged.
+
+## ADR-0018 — R0 preregistration freeze (r0-freeze-v1)
+
+- Date: 2026-10-06
+- Status: Accepted
+- Origin: owner
+- Context: The independent Codex review of `review/r0-v3` returned **FREEZE**
+  on commit `8f3b31da70aa8fa642b37a1ab6fa4c24584e0fd2` (after the required
+  fixes recorded in ADR-0017).
+- Decision:
+  - The R0 v3 preregistration
+    (`research/r0_dislocation_reversal/PREREGISTRATION.md`), as reviewed at
+    `8f3b31d`, is **approved and frozen**. Its content is unchanged by this
+    entry.
+  - **No R0 outcome data was inspected before freeze.** No R0 data was
+    downloaded, no R0 code was written, and no R0 statistic was computed.
+  - The freeze commit is the commit that adds this entry. It is tagged
+    `r0-freeze-v1` and becomes the initial `main` baseline (M0 governance
+    plus the R0 preregistration).
+  - Implementation has **not** started. It requires an explicit owner
+    instruction (`CLAUDE.md`, "Current stage"). From freeze on, any
+    specification change follows the preregistration §6 rules (logged
+    amendments of event parameters only, before the holdout run).
+- Consequences: The holdout (2025-10-08 → 2026-04-27) remains unopened. The
+  `--holdout` run happens only once, at a later frozen analysis commit
+  approved by the owner (§6 step 3).
