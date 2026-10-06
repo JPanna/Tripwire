@@ -230,6 +230,9 @@ class Listing:
     endpoint: str
     footers_probed: bool
     files: list[FileEntry]
+    # Writers set MANIFEST_VERSION; a manifest without it (legacy) loads as 0
+    # and is refused by require_authoritative_placement.
+    manifest_version: int = 0
 
     def to_json(self) -> str:
         return json.dumps(asdict(self), indent=1, sort_keys=False) + "\n"
@@ -241,6 +244,86 @@ class Listing:
         for f in d["files"]:
             safe_repo_path(f.path)
         return Listing(**d)
+
+
+# --- placement authority (the one check every manifest consumer runs) ------
+
+MANIFEST_VERSION = 2
+LEGACY_MESSAGE = (
+    "manifest lacks authoritative per-file placement; re-run --list --write-manifest "
+    "with the current tooling"
+)
+_EPOCH_S_MIN, _EPOCH_S_MAX = 1_500_000_000, 4_000_000_000
+
+
+class ManifestError(ValueError):
+    """A manifest that must not be consumed."""
+
+
+def placement_state(f: FileEntry) -> str:
+    """For a daily_aligned Parquet entry: "verified", "unresolved" or "absent".
+
+    "verified" requires the evidence the current writer records after a
+    successful footer probe: placement_verified is True, footer-sourced dates,
+    and plausible epoch-second timestamp bounds. "unresolved" means a probe was
+    attempted and failed. Anything else (legacy writers, hand edits, names
+    only) is "absent".
+    """
+    if f.placement_verified is False:
+        return "unresolved"
+    ok_ts = (
+        isinstance(f.ts_min, int)
+        and isinstance(f.ts_max, int)
+        and not isinstance(f.ts_min, bool)
+        and not isinstance(f.ts_max, bool)
+        and _EPOCH_S_MIN <= f.ts_min <= f.ts_max <= _EPOCH_S_MAX
+    )
+    if f.placement_verified is True and f.date_source == "footer" and ok_ts:
+        return "verified"
+    return "absent"
+
+
+def require_authoritative_placement(listing: Listing) -> None:
+    """Refuse a manifest unless every daily_aligned Parquet entry -- including
+    entries serialized as "not-needed" -- carries authoritative footer placement
+    and its serialized side/need equal what that evidence implies. Serialized
+    ``need`` and the manifest-wide ``footers_probed`` flag are never trusted on
+    their own; nothing is upgraded or reinterpreted."""
+    if listing.manifest_version != MANIFEST_VERSION or listing.footers_probed is not True:
+        raise ManifestError(LEGACY_MESSAGE)
+    for f in listing.files:
+        if layer_of(f.path) != LAYER_DAILY or not is_parquet(f.path):
+            continue
+        state = placement_state(f)
+        if state == "absent":
+            raise ManifestError(f"{LEGACY_MESSAGE} (no placement evidence: {f.path})")
+        if state == "unresolved":
+            raise ManifestError(
+                f"placement unresolved for {f.path}; re-run --list --write-manifest"
+            )
+        expect = classify(
+            FileEntry(
+                f.path,
+                f.size,
+                f.git_oid,
+                f.sha256,
+                ts_min=f.ts_min,
+                ts_max=f.ts_max,
+                placement_verified=True,
+            )
+        )
+        if (f.side, f.need) != (expect.side, expect.need):
+            raise ManifestError(
+                f"{LEGACY_MESSAGE} (serialized side/need {f.side}/{f.need} of {f.path} does "
+                f"not match its footer evidence: {expect.side}/{expect.need})"
+            )
+
+
+def load_authoritative_manifest(path) -> Listing:
+    """Read a manifest and run require_authoritative_placement before any use."""
+    listing = Listing.from_json(path.read_text())
+    require_authoritative_placement(listing)
+    return listing
 
 
 def totals(files: list[FileEntry]) -> dict[str, int]:
@@ -404,6 +487,7 @@ def render_manifest_md(listing: Listing) -> str:
         f"- Dataset: Hugging Face `{listing.repo_id}` (CC-BY-4.0; cite the dataset card)",
         f"- Pinned revision: `{listing.revision_sha}` (requested `{listing.revision_requested}`)",
         f"- Listed at: {listing.listed_at_utc} UTC",
+        f"- Manifest version: {listing.manifest_version}",
         f"- Footer timestamps probed: {listing.footers_probed}",
         f"- Partition boundary: rows with timestamp < {PARTITION_BOUNDARY} "
         f"({PARTITION_BOUNDARY_DAY}T00:00:00Z) are pre-holdout",

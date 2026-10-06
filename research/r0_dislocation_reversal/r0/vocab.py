@@ -21,8 +21,9 @@ counts, examples and the draft-classifier audit:
 
 - question, slug: a string, else nothing (non-string values are rejected).
 - category, tags: string tokens only.
-  - a string is one token, or, if it is a JSON array/object, it is parsed and
-    projected by the rules below;
+  - a string is one token; a string starting with ``{`` or ``[`` declares
+    itself structured: it is parsed as JSON and projected by the rules below,
+    and if it is not valid JSON the whole value is rejected (never published);
   - an object (dict/struct) contributes exactly one token: the value of the
     first of ``label``, ``name``, ``slug`` that is a non-empty string. No other
     key is ever read. An object without such a key contributes nothing and is
@@ -93,12 +94,16 @@ def project_tokens(value: object, *, _in_list: bool = False) -> tuple[list[str],
     if isinstance(value, str):
         s = value.strip()
         if s.startswith(("[", "{")):
+            # The string declares itself structured data. Only valid JSON is
+            # projected; anything else is rejected whole: no repair, no partial
+            # parse, and the original text is never published.
             try:
                 parsed = json.loads(s)
-            except json.JSONDecodeError:
-                parsed = None
-            if isinstance(parsed, (dict, list)):
-                return project_tokens(parsed, _in_list=_in_list)
+            except (json.JSONDecodeError, RecursionError):
+                return [], 1
+            if not isinstance(parsed, (dict, list)):
+                return [], 1
+            return project_tokens(parsed, _in_list=_in_list)
         return ([s], 0) if s else ([], 0)
     if isinstance(value, dict):
         tok = _object_token(value)

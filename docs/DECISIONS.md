@@ -604,3 +604,24 @@ Template:
     absent.
 - Consequences: Stage A–C remains an implementation review candidate; no
   Stage D work, no event detection, no corpus download.
+
+## ADR-0024 — Final Stage A–C audit fixes: structured metadata, manifest authority
+
+- Date: 2026-10-06
+- Status: Accepted
+- Origin: owner (adopting the two findings that remained open in the Codex
+  re-verification of `b952856`)
+- Decision:
+  - A category/tag string that starts with `{` or `[` declares structured
+    data: if it is not valid JSON the whole value is rejected and counted;
+    no repair, no partial parse, its text is never published.
+  - Manifests carry `manifest_version = 2`. One shared check
+    (`require_authoritative_placement`, run by every consumer before any use
+    of serialized `need`) refuses a manifest unless every `daily_aligned`
+    Parquet entry, including `not-needed` ones, has footer placement evidence
+    and its serialized side/need match that evidence. Legacy manifests are
+    refused, never upgraded; a regression fixture of the old writer's output
+    is kept under `tests/fixtures/`.
+- Consequences: existing manifests must be re-listed with the current
+  tooling. No Stage D work.
+

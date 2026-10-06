@@ -32,7 +32,15 @@ import _bootstrap  # noqa: F401
 
 from r0.hub import HubClient, RemoteFile
 from r0.integrity import IntegrityError, verify_file
-from r0.manifest import LAYER_CTF, LAYER_DAILY, FileEntry, Listing, is_parquet, unresolved
+from r0.manifest import (
+    LAYER_CTF,
+    LAYER_DAILY,
+    FileEntry,
+    Listing,
+    ManifestError,
+    is_parquet,
+    load_authoritative_manifest,
+)
 from r0.paths import RESEARCH_DIR, exploration_dir, raw_file
 from r0.periods import EXPLORATION_END, EXPLORATION_START
 from r0.rawread import Scope, read_footer, read_rows
@@ -67,14 +75,13 @@ INTEGRITY_EXIT = 4
 
 
 def _listing() -> Listing:
+    """The only manifest loader of Stage C (schema, vocab, domain checks)."""
     if not MANIFEST_JSON.exists():
         sys.exit("no DATA_MANIFEST.json: run 00_fetch.py --list --write-manifest first")
-    listing = Listing.from_json(MANIFEST_JSON.read_text())
-    if not listing.footers_probed or unresolved(listing.files):
-        sys.exit(
-            "DATA_MANIFEST.json has unverified placements; re-run 00_fetch.py --write-manifest"
-        )
-    return listing
+    try:
+        return load_authoritative_manifest(MANIFEST_JSON)
+    except ManifestError as e:
+        sys.exit(f"refusing: {e}")
 
 
 class Sources:

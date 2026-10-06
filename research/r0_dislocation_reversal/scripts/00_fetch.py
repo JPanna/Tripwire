@@ -27,16 +27,19 @@ from r0.integrity import IntegrityError, verify_file
 from r0.manifest import (
     LAYER_CTF,
     LAYER_DAILY,
+    MANIFEST_VERSION,
     PARTS,
     FileEntry,
     Listing,
+    ManifestError,
     classify,
     gib,
     is_parquet,
+    load_authoritative_manifest,
     part_files,
     render,
     render_manifest_md,
-    unresolved,
+    require_authoritative_placement,
 )
 from r0.paths import RESEARCH_DIR, raw_cache_dir, raw_file
 from r0.rawread import read_footer
@@ -138,6 +141,7 @@ def cmd_list(a: argparse.Namespace) -> int:
         endpoint=a.endpoint,
         footers_probed=probed,
         files=sorted(files, key=lambda f: f.path),
+        manifest_version=MANIFEST_VERSION,
     )
     print(render(listing), end="")
     if unverified:
@@ -149,10 +153,14 @@ def cmd_list(a: argparse.Namespace) -> int:
         if len(unverified) > 50:
             print(f"  ... and {len(unverified) - 50} more")
     if a.write_manifest:
-        if unverified or unresolved(listing.files):
+        try:
+            if unverified:
+                raise ManifestError("footer probe failed or incomplete")
+            require_authoritative_placement(listing)  # the same check consumers run
+        except ManifestError as e:
             sys.exit(
                 "refusing to write the manifest: placement must come from complete footer "
-                "timestamp statistics for every candidate (no override); inspect the files above"
+                f"timestamp statistics for every candidate (no override); {e}"
             )
         if MANIFEST_JSON.exists():
             old = Listing.from_json(MANIFEST_JSON.read_text())
@@ -167,13 +175,14 @@ def cmd_list(a: argparse.Namespace) -> int:
 def _load_manifest() -> Listing:
     if not MANIFEST_JSON.exists():
         sys.exit("no DATA_MANIFEST.json: run --list --write-manifest first")
-    return Listing.from_json(MANIFEST_JSON.read_text())
+    try:
+        return load_authoritative_manifest(MANIFEST_JSON)
+    except ManifestError as e:
+        sys.exit(f"refusing: {e}")
 
 
 def cmd_download(a: argparse.Namespace) -> int:
     listing = _load_manifest()
-    if not listing.footers_probed or unresolved(listing.files):
-        sys.exit("refusing: the manifest has unverified placements; re-run --list --write-manifest")
     sel = part_files(listing.files, a.download)
     total = sum(f.size for f in sel)
     if a.approve_bytes != total:

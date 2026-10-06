@@ -243,7 +243,7 @@ def test_unprobeable_required_candidate_blocks_manifest_and_download(env, capsys
         [fetch.classify(fetch.FileEntry("daily_aligned/2025-12-01.parquet", 10, "a" * 40, None))],
     )
     fetch.MANIFEST_JSON.write_text(lst.to_json())
-    with pytest.raises(SystemExit, match="unverified placements"):
+    with pytest.raises(SystemExit, match="lacks authoritative per-file placement"):
         fetch.main(["--download", "pre-holdout", "--approve-bytes", "0"])
 
 
@@ -588,3 +588,72 @@ def test_duplicate_fields_block_before_role_mapping(env, capsys, dup, extra_conf
     rep = json.loads(schema.REPORT_JSON.read_text())
     assert "daily_aligned: duplicate field names" in _blocker_roles(schema)
     assert rep["daily_aligned"]["roles"] == []  # role mapping not attempted
+
+
+# --- Codex re-check, finding 2: legacy manifests are refused by every consumer ---
+
+from pathlib import Path  # noqa: E402
+
+LEGACY = Path(__file__).parent / "fixtures" / "legacy_manifest_23a8eda.json"
+LEGACY_EXTRA = {
+    # the two misleading files the legacy fixture misplaces (see fixtures/README.md)
+    "daily_aligned/2023-01-01.parquet": daily([(EXPLORATION_START + 50 * DAY, "cX", "BTC hidden")]),
+    "daily_aligned/2025-10-07.PARQUET": daily(
+        [(B - 100, "cY", "pre"), (B + 100, "cZ", "HOLDOUT-SECRET")]
+    ),
+}
+
+
+@pytest.mark.parametrize(
+    "entry",
+    [
+        ("fetch", ["--download", "pre-holdout", "--approve-bytes", "0"]),
+        ("fetch", ["--verify", "--part", "pre-holdout"]),
+        ("schema", ["schema", "--source", "remote", *CONFIRM]),
+        ("schema", ["vocab", "--source", "remote"]),
+        ("schema", ["schema", "--source", "remote", "--domain-checks", *CONFIRM]),
+    ],
+    ids=["download", "verify", "schema", "vocab", "domain-checks"],
+)
+def test_every_consumer_refuses_the_legacy_manifest(env, capsys, data_root, entry):
+    hub, fetch, schema = env(extra=LEGACY_EXTRA)
+    fetch.MANIFEST_JSON.write_text(LEGACY.read_text())
+    schema.REPORT_JSON.write_text(json.dumps({"revision_sha": SHA}))  # let vocab reach the load
+    before = schema.REPORT_JSON.read_text()
+    mod = fetch if entry[0] == "fetch" else schema
+    with pytest.raises(SystemExit, match="lacks authoritative per-file placement"):
+        mod.main(entry[1])
+    assert hub.log == []  # refused before any request
+    assert schema.REPORT_JSON.read_text() == before  # no schema/domain output
+    assert not (data_root / "raw").exists() and not (data_root / "exploration").exists()
+
+
+def test_relisting_replaces_the_legacy_manifest_with_an_accepted_one(env, capsys, data_root):
+    hub, fetch, schema = env(extra=LEGACY_EXTRA)
+    fetch.MANIFEST_JSON.write_text(LEGACY.read_text())  # same pinned revision
+    assert (
+        fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"]) == 0
+    )
+    lst = json.loads(fetch.MANIFEST_JSON.read_text())
+    by = {f["path"]: f for f in lst["files"]}
+    assert lst["manifest_version"] == 2
+    old = by["daily_aligned/2023-01-01.parquet"]  # probed despite its name
+    assert (old["need"], old["date_source"], old["placement_verified"]) == (
+        "required-pre-holdout",
+        "footer",
+        True,
+    )
+    mixed = by["daily_aligned/2025-10-07.PARQUET"]
+    assert (mixed["side"], mixed["need"]) == ("straddle", "required-both")
+    # accepted by every consumer
+    files = fetch.Listing.from_json(fetch.MANIFEST_JSON.read_text()).files
+    for part in ("pre-holdout", "holdout", "ctf"):
+        total = sum(f.size for f in fetch.part_files(files, part))
+        assert fetch.main(["--download", part, "--approve-bytes", str(total)]) == 0
+    assert fetch.main(["--verify", "--part", "pre-holdout"]) == 0
+    assert schema.main(["schema", "--source", "local", "--domain-checks", *CONFIRM]) == 0
+    assert "skipped" not in json.loads(schema.REPORT_JSON.read_text())["domain_checks"]
+    assert schema.main(["vocab", "--source", "local"]) == 0
+    v = json.loads((data_root / "exploration/inspection/s_short_vocab.json").read_text())
+    assert "HOLDOUT-SECRET" not in json.dumps(v)
+    assert any(e["market_id"] == "cX" for e in v["examples_random"])  # rows now reachable

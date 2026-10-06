@@ -162,3 +162,73 @@ def test_input_order_cannot_change_reported_examples(data_root):
     # the audit example shows the variant that matched, not an arbitrary first one
     assert ev["audit_sample_matched"][0]["category"] == ["Crypto"]
     assert ev["audit_sample_matched"][0]["question"] == "Bitcoin up or down?"
+
+
+# --- Codex re-check, finding 1: malformed structured strings fail closed -----
+
+PAYLOAD = "PAYLOAD-2025-10-15T14:00:00Z"
+MALFORMED = {
+    "category-object": (
+        '{"label":"Crypto","scheduled_end":"' + PAYLOAD + '","payout_numerators":[0,1]',
+        None,
+    ),
+    "tags-array": (None, '[{"label":"Crypto","scheduled_end":"' + PAYLOAD + '"}'),
+    "inside-list": (None, ["Sports", '{"label":"Crypto","scheduled_end":"' + PAYLOAD + '"']),
+    "truncated-scheduled-end": ('{"scheduled_end":"' + PAYLOAD, None),
+    "truncated-payout": ('{"payout_numerators":[0,1,"' + PAYLOAD, None),
+    "label-plus-forbidden": (
+        '{"label": "Crypto", "scheduled_end": "' + PAYLOAD + '", "payout_numerators": [0, 1],}',
+        None,
+    ),
+}
+
+
+@pytest.mark.parametrize("case", list(MALFORMED))
+def test_malformed_structured_metadata_is_rejected_everywhere(data_root, case):
+    from conftest import load_script
+
+    cat, tag = MALFORMED[case]
+    t = pa.table(
+        {
+            "block_timestamp": pa.array([T0, T0 + 1], pa.int64()),
+            "condition_id": ["mBad", "mOk"],
+            "question": ["Bitcoin up or down?", "Plain question"],
+            "category": [cat, "Politics"],
+            "tags": pa.array(
+                [tag if isinstance(tag, list) else ([tag] if tag else []), ["Elections"]],
+                pa.list_(pa.string()),
+            )
+            if case != "tags-array"
+            else pa.array([tag, "Elections"], pa.string()),
+        }
+    )
+    p = write_parquet(data_root / "raw" / f"{case}.parquet", t)
+    col = collect([p], COLS)
+    vocab = build_vocab(col, COLS)
+    ev = evaluate_draft(col, DraftClassifier(frozenset({"crypto"}), None, None, "x"))
+    md = load_script("01_schema.py").render_vocab_md(vocab, COLS)
+    out_json = json.dumps([vars(vocab), ev, col.by_market], default=str)
+    for text in (out_json, md):
+        for forbidden in (PAYLOAD, "scheduled_end", "payout_numerators", '{"label'):
+            assert forbidden not in text, (case, forbidden)
+    assert vocab.rejected_metadata_parts == 1
+    # nothing from the malformed value became a token (no "Crypto" from it)
+    assert "Crypto" not in dict(vocab.category_counts) | dict(vocab.tag_counts)
+    assert ev["matched_tag_only"] + ev["matched_both"] == 0
+    if case == "inside-list":
+        assert dict(vocab.tag_counts)["Sports"] == 1  # the valid element survives
+
+
+@pytest.mark.parametrize(
+    "value,expected",
+    [
+        ('{"label":"Crypto"', ([], 1)),
+        ('[{"label":"Crypto"}', ([], 1)),
+        (["ok", '{"label":"Crypto"'], (["ok"], 1)),
+        ('[["nested"]]', ([], 1)),  # valid JSON, unsupported shape
+        ('{"label":"Crypto","scheduled_end":"x"}', (["Crypto"], 0)),  # valid: projected
+        ('[{"name":"Crypto","payout_numerators":[0,1]},"Sports"]', (["Crypto", "Sports"], 0)),
+    ],
+)
+def test_structured_string_rules(value, expected):
+    assert project_tokens(value) == expected

@@ -157,7 +157,16 @@ and writes no output.
 **S_short metadata projection.** Category/tag values are reduced to string
 tokens immediately after reading; an object contributes only its `label`,
 `name` or `slug` string (in that order). Other nested fields are never read
-into any output; unsupported shapes are counted as rejected and dropped.
+into any output; unsupported shapes are counted as rejected and dropped. A
+string starting with `{` or `[` must be valid JSON; otherwise the whole value
+is rejected and its text is never published.
+
+**Manifest placement authority.** Every consumer (download, `--verify`,
+schema, vocab, domain checks) loads the manifest through one function,
+`r0.manifest.load_authoritative_manifest`. It refuses the manifest unless it
+has `manifest_version` 2 and every `daily_aligned` Parquet entry (including
+`not-needed` ones) carries footer placement evidence whose implied side/need
+equals the serialized values. Legacy manifests must be re-listed.
 
 ## 6. Files written
 

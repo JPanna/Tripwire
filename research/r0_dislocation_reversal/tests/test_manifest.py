@@ -192,3 +192,176 @@ def test_manifest_rejects_unsafe_paths(bad):
     text = lst.to_json().replace('"README.md"', f'"{bad}"')
     with pytest.raises(ValueError, match="unsafe"):
         Listing.from_json(text)
+
+
+# --- Codex re-check, finding 2: consumers require per-file placement authority ---
+
+from dataclasses import replace as _replace  # noqa: E402
+from pathlib import Path  # noqa: E402
+
+from r0.manifest import (  # noqa: E402
+    LEGACY_MESSAGE,
+    MANIFEST_VERSION,
+    ManifestError,
+    load_authoritative_manifest,
+    placement_state,
+    require_authoritative_placement,
+)
+
+LEGACY = Path(__file__).parent / "fixtures" / "legacy_manifest_23a8eda.json"
+
+
+def current_listing(files: list[FileEntry]) -> Listing:
+    return Listing("o/n", "main", "c" * 40, "t", "http://x", True, files, MANIFEST_VERSION)
+
+
+def good_files() -> list[FileEntry]:
+    return [
+        e("README.md", 10),
+        probed("daily_aligned/2024-12-29.parquet", T2412_30 - DAY, T2412_30 - 1),
+        probed("daily_aligned/2025-02-01.parquet", B - 200 * DAY, B - 199 * DAY),
+        probed("daily_aligned/2025-10-07.PARQUET", B - 100, B + 100),
+    ]
+
+
+def test_legacy_fixture_is_refused():
+    with pytest.raises(ManifestError, match=LEGACY_MESSAGE):
+        load_authoritative_manifest(LEGACY)
+    legacy = Listing.from_json(LEGACY.read_text())
+    assert legacy.manifest_version == 0 and legacy.footers_probed is True  # coarse flag lies
+    # a version number alone never replaces the per-file evidence
+    upgraded = _replace(legacy, manifest_version=MANIFEST_VERSION)
+    with pytest.raises(ManifestError, match="no placement evidence"):
+        require_authoritative_placement(upgraded)
+
+
+def test_valid_current_manifest_is_accepted():
+    lst = current_listing(good_files())
+    require_authoritative_placement(lst)
+    assert Listing.from_json(lst.to_json()) == lst
+
+
+@pytest.mark.parametrize(
+    "entry,state",
+    [
+        (probed("daily_aligned/a.parquet", B - 10, B - 1), "verified"),
+        (e("daily_aligned/a.parquet", placement_verified=False), "unresolved"),
+        (e("daily_aligned/a.parquet"), "absent"),  # placement_verified=None
+        (
+            FileEntry(
+                "daily_aligned/a.parquet",
+                1,
+                "o" * 40,
+                None,
+                placement_verified=True,
+                date_source="footer",
+            ),
+            "absent",
+        ),  # no timestamp evidence
+        (
+            FileEntry(
+                "daily_aligned/a.parquet",
+                1,
+                "o" * 40,
+                None,
+                placement_verified=True,
+                date_source="name",
+                ts_min=B - 10,
+                ts_max=B - 1,
+            ),
+            "absent",
+        ),
+        (
+            FileEntry(
+                "daily_aligned/a.parquet",
+                1,
+                "o" * 40,
+                None,
+                placement_verified=True,
+                date_source="footer",
+                ts_min=(B - 10) * 1000,
+                ts_max=B * 1000,
+            ),
+            "absent",
+        ),
+    ],
+    ids=["verified", "unresolved", "none", "no-ts", "name-source", "not-seconds"],
+)
+def test_placement_state(entry, state):
+    assert placement_state(entry) == state
+
+
+def _with(files: list[FileEntry], path: str, **changes) -> Listing:
+    return current_listing([_replace(f, **changes) if f.path == path else f for f in files])
+
+
+@pytest.mark.parametrize(
+    "path,changes,match",
+    [
+        # old filename holding exploration rows, serialized from its name as not-needed
+        (
+            "daily_aligned/2024-12-29.parquet",
+            dict(
+                placement_verified=None,
+                ts_min=None,
+                ts_max=None,
+                date_source="name",
+                need="not-needed",
+                side="n/a",
+            ),
+            "no placement evidence",
+        ),
+        # mixed-case straddling file serialized from its name
+        (
+            "daily_aligned/2025-10-07.PARQUET",
+            dict(
+                placement_verified=None,
+                date_source="name",
+                need="required-pre-holdout",
+                side="pre_holdout",
+            ),
+            "no placement evidence",
+        ),
+        (
+            "daily_aligned/2025-02-01.parquet",
+            dict(placement_verified=None),
+            "no placement evidence",
+        ),
+        ("daily_aligned/2025-02-01.parquet", dict(ts_min=None), "no placement evidence"),
+        ("daily_aligned/2025-02-01.parquet", dict(placement_verified=False), "unresolved"),
+        # misleading serialized need despite valid evidence
+        ("daily_aligned/2025-10-07.PARQUET", dict(need="required-pre-holdout"), "does not match"),
+        ("daily_aligned/2025-02-01.parquet", dict(need="not-needed", side="n/a"), "does not match"),
+        (
+            "daily_aligned/2024-12-29.parquet",
+            dict(need="required-pre-holdout", side="pre_holdout"),
+            "does not match",
+        ),
+    ],
+    ids=[
+        "old-name-not-needed",
+        "mixed-case-straddle",
+        "verified-none",
+        "missing-ts",
+        "unresolved",
+        "need-straddle-lie",
+        "need-not-needed-lie",
+        "need-old-lie",
+    ],
+)
+def test_per_file_evidence_is_required(path, changes, match):
+    with pytest.raises(ManifestError, match=match):
+        require_authoritative_placement(_with(good_files(), path, **changes))
+
+
+def test_coarse_flags_are_not_enough():
+    files = good_files()
+    with pytest.raises(ManifestError, match=LEGACY_MESSAGE):
+        require_authoritative_placement(_replace(current_listing(files), manifest_version=0))
+    with pytest.raises(ManifestError, match=LEGACY_MESSAGE):
+        require_authoritative_placement(_replace(current_listing(files), footers_probed=False))
+    # footers_probed=True with one entry lacking evidence
+    lst = _with(files, "daily_aligned/2025-02-01.parquet", placement_verified=None)
+    assert lst.footers_probed is True
+    with pytest.raises(ManifestError):
+        require_authoritative_placement(lst)
