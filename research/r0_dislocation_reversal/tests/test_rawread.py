@@ -114,7 +114,9 @@ def test_footer_exposes_schema_and_timestamp_stats_only(raw_file):
         "ts_min",
         "ts_max",
         "ts_stats_complete",
+        "duplicate_names",
     }
+    assert info.duplicate_names == ()
 
 
 def test_footer_handles_nested_columns_before_timestamp(data_root):
@@ -238,3 +240,16 @@ def test_no_stage_a_c_script_authorizes_holdout():
     for f in root.glob("scripts/*.py"):
         text = f.read_text()
         assert "authorize_holdout" not in text and "Scope.HOLDOUT" not in text, f.name
+
+
+def test_duplicate_field_names_are_never_resolved_silently(data_root):
+    t = pa.Table.from_arrays(
+        [pa.array([B - 5], pa.int64()), pa.array([B + 5], pa.int64()), pa.array([1])],
+        names=["block_timestamp", "block_timestamp", "x"],
+    )
+    p = write_parquet(data_root / "raw" / "dup.parquet", t)
+    info = read_footer(p)
+    assert info.duplicate_names == ("block_timestamp",)
+    assert info.ts_column is None and info.ts_min is None  # no statistics from an ambiguous column
+    with pytest.raises(ValueError, match="duplicate field names"):
+        read_rows(p, ["x"], ts_column="block_timestamp", scope=Scope.PRE_HOLDOUT)

@@ -7,9 +7,12 @@ import pytest
 
 from r0.roles import CTF_RESOLUTION_ROLES, DAILY_ROLES
 from r0.schema import (
+    coverage_blocker,
     ctf_blockers,
     ctf_table_key,
     daily_blockers,
+    drift_blocker,
+    duplicate_field_blocker,
     map_roles,
     schema_variants,
 )
@@ -26,7 +29,7 @@ FULL = {
     "taker": pa.string(),
     "asset_id": pa.string(),
 }
-CONF = {"token_id": "asset_id"}
+CONF = {"token_id": "asset_id", "shares": "NONE"}
 
 
 def variants(*schemas: dict):
@@ -45,7 +48,7 @@ def test_full_schema_has_no_blockers():
     roles, blockers = run(FULL)
     assert blockers == []
     assert roles["p_event"].status == "FOUND" and roles["token_id"].status == "CONFIRMED"
-    assert roles["shares"].status == "MISSING"  # fallback usdc_amount / price applies
+    assert roles["shares"].status == "CONFIRMED_ABSENT"  # owner said shares=NONE: fallback
 
 
 def test_exact_name_with_wrong_type_is_ambiguous():
@@ -78,14 +81,34 @@ def test_confirmation_of_column_missing_in_a_variant():
 
 
 def test_possible_share_column_blocks_the_fallback():
-    roles, blockers = run({**FULL, "token_amount": pa.float64()})
+    conf = {"token_id": "asset_id"}
+    roles, blockers = run({**FULL, "token_amount": pa.float64()}, conf=conf)
     assert roles["shares"].status == "CANDIDATES" and blockers == ["shares"]
     roles, blockers = run(
-        {**FULL, "token_amount": pa.float64()}, conf={**CONF, "shares": "token_amount"}
+        {**FULL, "token_amount": pa.float64()}, conf={**conf, "shares": "token_amount"}
     )
     assert roles["shares"].status == "CONFIRMED" and blockers == []
-    roles, blockers = run({**FULL, "token_amount": pa.float64()}, conf={**CONF, "shares": "NONE"})
+    roles, blockers = run({**FULL, "token_amount": pa.float64()}, conf={**conf, "shares": "NONE"})
     assert roles["shares"].status == "CONFIRMED_ABSENT" and blockers == []
+
+
+def test_unrecognised_share_column_q_keeps_the_fallback_blocked():
+    """Codex finding 7: no heuristic match is not evidence that no share column exists."""
+    conf = {"token_id": "asset_id"}
+    schema = {**FULL, "q": pa.float64()}
+    roles, blockers = run(schema, conf=conf)
+    assert roles["shares"].status == "MISSING" and "q" not in roles["shares"].candidates
+    assert blockers == ["shares"]  # usdc_amount and price exist, yet the fallback is blocked
+    roles, blockers = run(schema, conf={**conf, "shares": "q"})
+    assert roles["shares"].status == "CONFIRMED" and blockers == []
+    roles, blockers = run(schema, conf={**conf, "shares": "NONE"})
+    assert roles["shares"].status == "CONFIRMED_ABSENT" and blockers == []
+
+
+def test_shares_none_still_needs_usdc_and_price():
+    no_price = {k: v for k, v in FULL.items() if k != "price"}
+    _, blockers = run(no_price)
+    assert blockers == ["shares"]
 
 
 def test_confirmed_absent_does_not_resolve_a_required_role():
@@ -117,6 +140,7 @@ def test_ctf_blockers():
         ("CTF/resolutions/year=2025/month=1/x.parquet", "CTF/resolutions"),
         ("CTF/resolutions.parquet", "CTF/resolutions"),
         ("CTF/splits_2025-01.parquet", "CTF/splits"),
+        ("CTF/resolutions_2025.PARQUET", "CTF/resolutions"),
     ],
 )
 def test_ctf_table_key(path, key):
@@ -162,3 +186,43 @@ def test_domain_update_counts_violations():
     assert s.codes["direction_D"] == {"1": 2, "0": 1, "-1": 1}
     # row 3: outcome_seq 2 -> 1 - 0.3 = 0.7 != 1.2; row 4: 0.6 vs null p_event is not counted
     assert s.consistency_mismatches["p_event_vs_price_rule_gt_1e-9"] == 1
+
+
+# --- Codex findings 5 and 6: duplicate names, drift and coverage --------------
+
+
+def _schema(fields):
+    return pa.schema(fields)  # a list keeps duplicates; a dict would collapse them
+
+
+BASE = list(FULL.items())
+
+
+@pytest.mark.parametrize(
+    "extra",
+    [
+        [("p_event", pa.float64())],  # duplicate, same type
+        [("p_event", pa.string())],  # duplicate, different type
+        [("asset_id", pa.string())],  # duplicate of an owner-confirmed candidate
+    ],
+    ids=["same-type", "different-type", "confirmed-candidate"],
+)
+def test_duplicate_field_names_block(extra):
+    files = [("f0", _schema(BASE)), ("f1", _schema(BASE + extra))]
+    b = duplicate_field_blocker("daily_aligned", files)
+    assert b is not None and "duplicate" in b.role
+    assert b.available_fields == [extra[0][0]]
+    assert duplicate_field_blocker("daily_aligned", [("f0", _schema(BASE))]) is None
+
+
+def test_drift_in_any_file_blocks():
+    v = variants(FULL, FULL, {**FULL, "extra": pa.int8()})
+    b = drift_blocker("daily_aligned", v)
+    assert b is not None and "drift" in b.role and "extra" in b.problem
+    assert drift_blocker("daily_aligned", variants(FULL, FULL)) is None
+
+
+def test_coverage_blocker():
+    assert coverage_blocker("t", [], []) is None
+    assert "1 required file" in coverage_blocker("t", ["a.parquet"], []).problem
+    assert "footer(s) unreadable" in coverage_blocker("t", [], ["b: OSError"]).problem

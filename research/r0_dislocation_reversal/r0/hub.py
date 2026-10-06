@@ -22,11 +22,11 @@ Upstream paths are untrusted: ``safe_repo_path`` rejects absolute paths and
 
 from __future__ import annotations
 
-import hashlib
 import io
 import json
 import os
 import re
+import tempfile
 import time
 import urllib.error
 import urllib.request
@@ -34,6 +34,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import quote, urlsplit
 
+from r0.integrity import (
+    Hasher,
+    IntegrityError,
+    check_digests,
+    require_usable_metadata,
+    verify_file,
+)
 from r0.paths import safe_repo_path as _safe_repo_path
 
 DEFAULT_ENDPOINT = "https://huggingface.co"
@@ -52,13 +59,6 @@ def safe_repo_path(path: str) -> str:
         return _safe_repo_path(path)
     except ValueError as e:
         raise HubError(str(e)) from None
-
-
-def git_blob_sha1(data_chunks, size: int) -> str:
-    h = hashlib.sha1(f"blob {size}\0".encode())
-    for c in data_chunks:
-        h.update(c)
-    return h.hexdigest()
 
 
 @dataclass(frozen=True)
@@ -179,49 +179,93 @@ class HubClient:
         expected_size: int,
         expected_sha256: str | None,
         expected_git_oid: str | None = None,
+        *,
+        root: Path,
     ) -> str:
-        """Download to ``dest`` atomically; verify size and hash; make read-only.
+        """Download ``url`` to ``dest`` inside the cache directory ``root``.
 
-        Verification uses the upstream LFS SHA-256 when the listing has one,
-        otherwise the git blob SHA-1 (``expected_git_oid``); at least one is
-        required. Returns the SHA-256 of the file. An existing ``dest`` is
-        never overwritten: it is verified and kept, or an error is raised.
+        - ``dest`` must lie lexically inside ``root``; no directory between
+          them may be a symlink, and ``dest`` itself may not be one.
+        - Bytes go to a fresh temporary file created exclusively in the target
+          directory (``tempfile.mkstemp``: unique name, ``O_EXCL``, no symlink
+          following), are verified with ``r0.integrity`` (size, then SHA-256 or
+          the Git blob SHA-1), made read-only, and only then renamed onto
+          ``dest`` after re-checking containment. Any failure removes the
+          temporary file.
+        - An existing ``dest`` is never overwritten: it is verified and kept,
+          or an error is raised.
+
+        Returns the SHA-256 of the file.
         """
-        if not expected_sha256 and not expected_git_oid:
-            raise HubError(f"no upstream hash to verify {dest.name} against; refusing")
+        parent = _contained_dir(root, dest)
+        final = parent / dest.name
+        if final.is_symlink():
+            raise HubError(f"destination is a symlink; refusing: {dest.name}")
+        if final.exists():
+            try:
+                return verify_file(final, expected_size, expected_sha256, expected_git_oid)
+            except IntegrityError as e:
+                raise HubError(f"existing cached file does not match the manifest: {e}") from None
+        # Refuse before any network access when nothing could verify the bytes.
+        try:
+            require_usable_metadata(expected_sha256, expected_git_oid, dest.name)
+        except IntegrityError as e:
+            raise HubError(str(e)) from None
+        fd, tmp_name = tempfile.mkstemp(dir=parent, prefix=f".{dest.name}.", suffix=".part")
+        tmp = Path(tmp_name)
+        try:
+            h = Hasher(expected_size)
+            with os.fdopen(fd, "wb") as f, self._open(url) as r:
+                while chunk := r.read(8 << 20):
+                    h.update(chunk)
+                    f.write(chunk)
+                f.flush()
+                os.fsync(f.fileno())
+                os.fchmod(f.fileno(), 0o444)
+            try:
+                check_digests(
+                    size=h.size,
+                    sha256=h.sha256.hexdigest(),
+                    git_sha1=h.git_sha1.hexdigest(),
+                    expected_size=expected_size,
+                    expected_sha256=expected_sha256,
+                    expected_git_oid=expected_git_oid,
+                    what=dest.name,
+                )
+            except IntegrityError as e:
+                raise HubError(f"download verification failed for {dest.name}: {e}") from None
+            # Re-check containment and the destination right before the rename.
+            if _contained_dir(root, dest) != parent or final.is_symlink() or final.exists():
+                raise HubError(f"destination changed during download; refusing: {dest.name}")
+            os.replace(tmp, final)
+            return h.sha256.hexdigest()
+        finally:
+            if tmp.exists() or tmp.is_symlink():
+                tmp.unlink()
 
-        def ok(n: int, sha256: str, sha1: str) -> bool:
-            if n != expected_size:
-                return False
-            if expected_sha256:
-                return sha256 == expected_sha256
-            return sha1 == expected_git_oid
 
-        if dest.exists():
-            got = sha256_file(dest)
-            with open(dest, "rb") as f:
-                sha1 = git_blob_sha1(iter(lambda: f.read(8 << 20), b""), dest.stat().st_size)
-            if not ok(dest.stat().st_size, got, sha1):
-                raise HubError(f"existing cached file does not match the manifest: {dest}")
-            return got
-        dest.parent.mkdir(parents=True, exist_ok=True)
-        part = dest.with_name(dest.name + ".part")
-        h = hashlib.sha256()
-        h1 = hashlib.sha1(f"blob {expected_size}\0".encode())
-        n = 0
-        with self._open(url) as r, open(part, "wb") as f:
-            while chunk := r.read(8 << 20):
-                h.update(chunk)
-                h1.update(chunk)
-                f.write(chunk)
-                n += len(chunk)
-        got = h.hexdigest()
-        if not ok(n, got, h1.hexdigest()):
-            part.unlink(missing_ok=True)
-            raise HubError(f"download verification failed for {dest.name}")
-        os.replace(part, dest)
-        dest.chmod(0o444)
-        return got
+def _contained_dir(root: Path, dest: Path) -> Path:
+    """Create/return ``dest``'s parent inside ``root``; refuse symlinks and escapes."""
+    root_r = root.resolve()
+    try:
+        rel = dest.relative_to(root)
+    except ValueError:
+        raise HubError(f"destination is outside the cache directory: {dest}") from None
+    if not rel.parts or any(p in ("", ".", "..") for p in rel.parts):
+        raise HubError(f"unsafe destination: {dest}")
+    root_r.mkdir(parents=True, exist_ok=True)
+    cur = root_r
+    for part in rel.parts[:-1]:
+        cur = cur / part
+        if cur.is_symlink():
+            raise HubError(f"symlinked directory in the cache path; refusing: {cur}")
+        if not cur.exists():
+            cur.mkdir()
+        if cur.is_symlink() or not cur.is_dir():
+            raise HubError(f"cache path component is not a directory: {cur}")
+    if not cur.resolve().is_relative_to(root_r):
+        raise HubError(f"destination escapes the cache directory: {dest}")
+    return cur
 
 
 def next_link(link_header: str | None) -> str | None:
@@ -232,14 +276,6 @@ def next_link(link_header: str | None) -> str | None:
         if m:
             return m.group(1)
     return None
-
-
-def sha256_file(path: Path) -> str:
-    h = hashlib.sha256()
-    with open(path, "rb") as f:
-        while chunk := f.read(8 << 20):
-            h.update(chunk)
-    return h.hexdigest()
 
 
 def _redact(url: str) -> str:

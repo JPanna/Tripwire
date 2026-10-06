@@ -22,16 +22,21 @@ from datetime import UTC, datetime
 
 import _bootstrap  # noqa: F401
 
-from r0.hub import DATASET_REPO, DEFAULT_ENDPOINT, HubClient, RemoteFile, sha256_file
+from r0.hub import DATASET_REPO, DEFAULT_ENDPOINT, HubClient, RemoteFile
+from r0.integrity import IntegrityError, verify_file
 from r0.manifest import (
+    LAYER_CTF,
+    LAYER_DAILY,
     PARTS,
     FileEntry,
     Listing,
     classify,
     gib,
+    is_parquet,
     part_files,
     render,
     render_manifest_md,
+    unresolved,
 )
 from r0.paths import RESEARCH_DIR, raw_cache_dir, raw_file
 from r0.rawread import read_footer
@@ -51,6 +56,8 @@ def _probe(client: HubClient, repo: str, sha: str, f: FileEntry) -> tuple[FileEn
         return g, rf.bytes_fetched, False
     g = replace(f, ts_min=info.ts_min, ts_max=info.ts_max, notes=[])
     verified = True
+    if info.duplicate_names:
+        g.notes.append(f"duplicate field names {list(info.duplicate_names)}")
     if info.ts_column is None:
         g.notes.append("no timestamp column among " + ", ".join(TS_CANDIDATES))
         verified = False
@@ -65,7 +72,19 @@ def _probe(client: HubClient, repo: str, sha: str, f: FileEntry) -> tuple[FileEn
         verified = False
     if not verified:
         g.ts_min = g.ts_max = None
+    g.placement_verified = verified
     return g, rf.bytes_fetched, verified
+
+
+def probe_targets(files: list[FileEntry]) -> list[int]:
+    """Every daily_aligned Parquet file (whatever its name) and every CTF Parquet
+    file of a table that is not excluded by name. File names never decide."""
+    return [
+        i
+        for i, f in enumerate(files)
+        if is_parquet(f.path)
+        and (f.layer == LAYER_DAILY or (f.layer == LAYER_CTF and f.need != "not-needed"))
+    ]
 
 
 def _carry_local_hashes(new: list[FileEntry], old: Listing) -> None:
@@ -100,15 +119,12 @@ def cmd_list(a: argparse.Namespace) -> int:
     # A manifest must not rest on file names alone: always verify placement
     # from footer timestamp statistics before writing one.
     if a.probe_footers or a.write_manifest:
-        targets = [
-            i for i, f in enumerate(files) if f.path.endswith(".parquet") and f.need != "not-needed"
-        ]
+        targets = probe_targets(files)
         fetched = 0
         with ThreadPoolExecutor(max_workers=8) as ex:
             results = ex.map(lambda i: _probe(client, a.repo, sha, fresh(i)), targets)
             for i, (g, n, ok) in zip(targets, results, strict=True):
                 if not ok:
-                    g.placement_verified = False
                     unverified.append(g.path)
                 files[i] = classify(g)
                 fetched += n
@@ -126,17 +142,17 @@ def cmd_list(a: argparse.Namespace) -> int:
     print(render(listing), end="")
     if unverified:
         print(
-            f"\nPLACEMENT UNVERIFIED for {len(unverified)} files (probe failed or statistics "
-            "incomplete); they are treated as possibly straddling:"
+            f"\nFOOTER PROBE FAILED or incomplete for {len(unverified)} files; their "
+            "placement is unresolved:"
         )
         print("\n".join(f"  {p}" for p in unverified[:50]))
         if len(unverified) > 50:
             print(f"  ... and {len(unverified) - 50} more")
     if a.write_manifest:
-        if unverified and not a.accept_unverified:
+        if unverified or unresolved(listing.files):
             sys.exit(
-                "refusing to write the manifest with unverified placements; inspect them, "
-                "then re-run with --accept-unverified to place them conservatively"
+                "refusing to write the manifest: placement must come from complete footer "
+                "timestamp statistics for every candidate (no override); inspect the files above"
             )
         if MANIFEST_JSON.exists():
             old = Listing.from_json(MANIFEST_JSON.read_text())
@@ -156,6 +172,8 @@ def _load_manifest() -> Listing:
 
 def cmd_download(a: argparse.Namespace) -> int:
     listing = _load_manifest()
+    if not listing.footers_probed or unresolved(listing.files):
+        sys.exit("refusing: the manifest has unverified placements; re-run --list --write-manifest")
     sel = part_files(listing.files, a.download)
     total = sum(f.size for f in sel)
     if a.approve_bytes != total:
@@ -177,6 +195,7 @@ def cmd_download(a: argparse.Namespace) -> int:
             f.size,
             f.sha256,
             f.git_oid,
+            root=cache,
         )
         if f.sha256 is None:
             f.sha256 = got
@@ -197,15 +216,17 @@ def cmd_verify(a: argparse.Namespace) -> int:
     bad = present = missing = 0
     for f in listing.files:
         p = raw_file(listing.repo_id, listing.revision_sha, f.path)
-        if not p.exists():
+        if not (p.exists() or p.is_symlink()):
             if f.path in required:
                 missing += 1
                 print(f"MISSING {f.path}")
             continue
         present += 1
-        if p.stat().st_size != f.size or (f.sha256 and sha256_file(p) != f.sha256):
+        try:
+            verify_file(p, f.size, f.sha256, f.git_oid)
+        except IntegrityError as e:
             bad += 1
-            print(f"MISMATCH {f.path}")
+            print(f"MISMATCH {f.path}: {e}")
     leftovers = list(cache.rglob("*.part")) if cache.exists() else []
     for x in leftovers:
         print(f"LEFTOVER partial download {x.relative_to(cache)}")
@@ -235,11 +256,6 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--write-manifest", action="store_true", help="implies --probe-footers")
     p.add_argument("--approve-bytes", type=int, default=-1)
     p.add_argument("--replace-manifest", action="store_true", help="allow re-pinning the revision")
-    p.add_argument(
-        "--accept-unverified",
-        action="store_true",
-        help="write the manifest even if some placements are unverified (placed conservatively)",
-    )
     p.add_argument("--part", choices=PARTS, help="with --verify: require every file of this part")
     a = p.parse_args(argv)
     if a.list:

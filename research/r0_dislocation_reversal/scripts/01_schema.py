@@ -31,7 +31,8 @@ from pathlib import Path
 import _bootstrap  # noqa: F401
 
 from r0.hub import HubClient, RemoteFile
-from r0.manifest import LAYER_CTF, LAYER_DAILY, FileEntry, Listing
+from r0.integrity import IntegrityError, verify_file
+from r0.manifest import LAYER_CTF, LAYER_DAILY, FileEntry, Listing, is_parquet, unresolved
 from r0.paths import RESEARCH_DIR, exploration_dir, raw_file
 from r0.periods import EXPLORATION_END, EXPLORATION_START
 from r0.rawread import Scope, read_footer, read_rows
@@ -39,10 +40,13 @@ from r0.roles import CTF_RESOLUTION_ROLES, DAILY_ROLES
 from r0.schema import (
     RESOLVED,
     DomainSummary,
+    coverage_blocker,
     ctf_blockers,
     ctf_table_key,
     daily_blockers,
     domain_update,
+    drift_blocker,
+    duplicate_field_blocker,
     map_roles,
     schema_variants,
 )
@@ -52,33 +56,57 @@ MANIFEST_JSON = RESEARCH_DIR / "DATA_MANIFEST.json"
 REPORT_JSON = RESEARCH_DIR / "SCHEMA_REPORT.json"
 REPORT_MD = RESEARCH_DIR / "SCHEMA_REPORT.md"
 TS_CANDIDATES = ("block_timestamp", "timestamp", "block_time")
-CTF_FOOTERS_PER_TABLE = 50
+# Informational CTF tables (not the resolution table) are sampled, and the
+# report says so; the resolution table is always inspected completely.
+CTF_INFO_FOOTERS_PER_TABLE = 50
+REQUIRED_DAILY = ("required-pre-holdout", "required-both", "required-holdout")
 # Files that may contain pre-holdout rows (exploration-period rows are a subset).
 PRE_HOLDOUT_NEEDS = ("required-pre-holdout", "required-both")
 BLOCKER_EXIT = 3
+INTEGRITY_EXIT = 4
 
 
 def _listing() -> Listing:
     if not MANIFEST_JSON.exists():
         sys.exit("no DATA_MANIFEST.json: run 00_fetch.py --list --write-manifest first")
-    return Listing.from_json(MANIFEST_JSON.read_text())
+    listing = Listing.from_json(MANIFEST_JSON.read_text())
+    if not listing.footers_probed or unresolved(listing.files):
+        sys.exit(
+            "DATA_MANIFEST.json has unverified placements; re-run 00_fetch.py --write-manifest"
+        )
+    return listing
 
 
 class Sources:
+    """Opens pinned files. Local files are consumed only after r0.integrity
+    verification (size, then SHA-256 or Git blob SHA-1); failures raise."""
+
     def __init__(self, listing: Listing, mode: str) -> None:
         self.listing, self.mode = listing, mode
         self.client = HubClient(listing.endpoint) if mode == "remote" else None
         self.remote: list[RemoteFile] = []
+        self._verified: set[str] = set()
+
+    def local_path(self, f: FileEntry) -> Path:
+        return raw_file(self.listing.repo_id, self.listing.revision_sha, f.path)
+
+    def present_locally(self, f: FileEntry) -> bool:
+        p = self.local_path(f)
+        return p.exists() or p.is_symlink()
 
     def available(self, f: FileEntry) -> bool:
-        return self.mode == "remote" or self._local(f).exists()
+        return self.mode == "remote" or self.present_locally(f)
 
-    def _local(self, f: FileEntry) -> Path:
-        return raw_file(self.listing.repo_id, self.listing.revision_sha, f.path)
+    def verify_local(self, f: FileEntry) -> Path:
+        p = self.local_path(f)
+        if f.path not in self._verified:
+            verify_file(p, f.size, f.sha256, f.git_oid)  # raises IntegrityError
+            self._verified.add(f.path)
+        return p
 
     def open(self, f: FileEntry):
         if self.mode == "local":
-            return self._local(f)
+            return self.verify_local(f)
         assert self.client is not None
         rf = RemoteFile(
             self.client,
@@ -93,11 +121,24 @@ class Sources:
 
 
 def _footers(src: Sources, files: list[FileEntry]):
+    """(read, unreadable): footers of ``files``; integrity failures propagate."""
+    if src.mode == "local":
+        for f in files:  # verify everything before reading anything
+            src.verify_local(f)
+
     def one(f: FileEntry):
-        return f, read_footer(src.open(f), TS_CANDIDATES)
+        try:
+            return f, read_footer(src.open(f), TS_CANDIDATES)
+        except IntegrityError:
+            raise
+        except Exception as e:  # unreadable footer: reported as a coverage gap
+            return f, e
 
     with ThreadPoolExecutor(max_workers=8 if src.mode == "remote" else 2) as ex:
-        return list(ex.map(one, files))
+        res = list(ex.map(one, files))
+    read = [(f, i) for f, i in res if not isinstance(i, Exception)]
+    bad = [f"{f.path}: {type(i).__name__}" for f, i in res if isinstance(i, Exception)]
+    return read, bad
 
 
 def _evenly(files: list[FileEntry], k: int) -> list[FileEntry]:
@@ -121,33 +162,57 @@ def _utc(ts: int | None) -> str | None:
     return None if ts is None else datetime.fromtimestamp(ts, UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
+def _inspect_table(table, roles, src, files, confirm, sample: int | None = None):
+    """Footer-inspect one table. Returns (report dict, blockers, role results)."""
+    present = [f for f in files if src.available(f)]
+    missing = [f.path for f in files if not src.available(f)]
+    chosen = _evenly(present, sample) if sample else present
+    foot, unreadable = _footers(src, chosen)
+    variants = schema_variants([(f.path, i.schema, f.first_day, f.last_day) for f, i in foot])
+    blockers = []
+    dup = duplicate_field_blocker(table, [(f.path, i.schema) for f, i in foot])
+    results = []
+    if dup is not None:
+        blockers.append(dup)  # no role mapping on ambiguous schemas
+    elif roles is not None:
+        results = map_roles(roles, variants, confirm)
+    if roles is not None:  # a required table: coverage and drift must be complete
+        for b in (coverage_blocker(table, missing, unreadable), drift_blocker(table, variants)):
+            if b is not None:
+                blockers.append(b)
+    info = {
+        "files": len(files),
+        "footers_read": len(foot),
+        "missing": len(missing),
+        "unreadable": unreadable,
+        "sampled": len(chosen) < len(present),
+        "schema_variants": [asdict(v) for v in variants],
+        "roles": [asdict(r) for r in results],
+    }
+    return info, blockers, results, foot, variants
+
+
 def cmd_schema(a: argparse.Namespace) -> int:
     listing = _listing()
     src = Sources(listing, a.source)
     confirm = _parse_confirm(a.confirm)
 
-    daily = [f for f in listing.files if f.layer == LAYER_DAILY and f.need.startswith("required")]
-    daily_ok = [f for f in daily if src.available(f)]
-    ctf_all = [f for f in listing.files if f.layer == LAYER_CTF and f.path.endswith(".parquet")]
+    daily = [f for f in listing.files if f.layer == LAYER_DAILY and f.need in REQUIRED_DAILY]
+    d_info, d_block, d_roles, d_foot, d_vars = _inspect_table(
+        "daily_aligned",
+        DAILY_ROLES,
+        src,
+        daily,
+        {k: v for k, v in confirm.items() if not k.startswith("ctf_")},
+    )
+    blockers = list(d_block)
+    if not any(b.role.startswith("daily_aligned: duplicate") for b in d_block):
+        blockers += daily_blockers(d_roles, d_vars)
+
+    ctf_all = [f for f in listing.files if f.layer == LAYER_CTF and is_parquet(f.path)]
     tables: dict[str, list[FileEntry]] = {}
     for f in ctf_all:
         tables.setdefault(ctf_table_key(f.path), []).append(f)
-    capped = {
-        t: _evenly([f for f in fs if src.available(f)], CTF_FOOTERS_PER_TABLE)
-        for t, fs in tables.items()
-    }
-
-    d_foot = _footers(src, daily_ok)
-    c_foot = {t: _footers(src, fs) for t, fs in capped.items()}
-
-    d_vars = schema_variants([(f.path, i.schema, f.first_day, f.last_day) for f, i in d_foot])
-    d_roles = map_roles(
-        DAILY_ROLES, d_vars, {k: v for k, v in confirm.items() if not k.startswith("ctf_")}
-    )
-    c_vars = {
-        t: schema_variants([(f.path, i.schema, f.first_day, f.last_day) for f, i in fi])
-        for t, fi in c_foot.items()
-    }
     if a.ctf_resolution_table:
         if a.ctf_resolution_table not in tables:
             sys.exit(
@@ -159,15 +224,26 @@ def cmd_schema(a: argparse.Namespace) -> int:
         res_tables = {
             t for t, fs in tables.items() if any(f.need == "required-ctf-resolution" for f in fs)
         }
-    c_roles = {
-        t: map_roles(
-            CTF_RESOLUTION_ROLES,
-            c_vars[t],
-            {k: v for k, v in confirm.items() if k.startswith("ctf_")},
-        )
-        for t in res_tables
-    }
-    blockers = daily_blockers(d_roles, d_vars) + ctf_blockers(c_roles, c_vars)
+    ctf_confirm = {k: v for k, v in confirm.items() if k.startswith("ctf_")}
+    ctf_report, c_roles, c_vars = {}, {}, {}
+    for t in sorted(tables):
+        is_res = t in res_tables
+        if is_res:  # every file of the resolution table, no cap
+            info, blk, res, _, variants = _inspect_table(
+                t, CTF_RESOLUTION_ROLES, src, tables[t], ctf_confirm
+            )
+            blockers += blk
+            if not any("duplicate" in b.role for b in blk):
+                c_roles[t] = res
+        else:  # informational only: verified-present files, sampled and labelled
+            files = [f for f in tables[t] if src.available(f)]
+            info, _, _, _, variants = _inspect_table(
+                t, None, src, files, {}, CTF_INFO_FOOTERS_PER_TABLE
+            )
+        c_vars[t] = variants
+        info["is_resolution_table"] = is_res
+        ctf_report[t] = info
+    blockers += ctf_blockers(c_roles, c_vars) if (c_roles or not res_tables) else []
 
     expl_foot = [(f, i) for f, i in d_foot if f.need in PRE_HOLDOUT_NEEDS]
     ts_all = [(i.ts_min, i.ts_max) for _, i in d_foot if i.ts_min is not None]
@@ -179,37 +255,23 @@ def cmd_schema(a: argparse.Namespace) -> int:
         "confirmations": confirm,
         "ctf_resolution_table_designated_by_owner": a.ctf_resolution_table,
         "daily_aligned": {
-            "files_needed": len(daily),
-            "footers_read": len(d_foot),
-            "footers_missing_locally": len(daily) - len(daily_ok),
-            "schema_variants": [asdict(v) for v in d_vars],
-            "roles": [asdict(r) for r in d_roles],
+            **d_info,
             "coverage_utc": [_utc(min(t[0] for t in ts_all)), _utc(max(t[1] for t in ts_all))]
             if ts_all
             else None,
             "rows_total": sum(i.num_rows for _, i in d_foot),
             "rows_pre_holdout_side_files": sum(i.num_rows for _, i in expl_foot),
         },
-        "ctf": {
-            t: {
-                "files": len(tables[t]),
-                "footers_read": len(c_foot[t]),
-                "capped": len(capped[t]) < len([f for f in tables[t] if src.available(f)]),
-                "is_resolution_table": t in res_tables,
-                "schema_variants": [asdict(v) for v in c_vars[t]],
-                "roles": [asdict(r) for r in c_roles.get(t, [])],
-            }
-            for t in sorted(tables)
-        },
+        "ctf": ctf_report,
         "blockers": [asdict(b) for b in blockers],
         "remote_bytes_fetched": src.bytes_fetched(),
     }
     if a.domain_checks:
-        # ADR-0022: only after every required role is confirmed.
+        # ADR-0022: only once schema coverage is complete and every role is cleared.
         report["domain_checks"] = (
-            {"skipped": "schema roles not confirmed: resolve the blockers first"}
+            {"skipped": "schema not cleared: resolve the blockers first"}
             if blockers
-            else _domain(listing, src, d_roles, a.sample_every)
+            else _domain(listing, d_roles, a.sample_every)
         )
     REPORT_JSON.write_text(json.dumps(report, indent=1, default=str) + "\n")
     REPORT_MD.write_text(render_schema_md(report))
@@ -217,8 +279,12 @@ def cmd_schema(a: argparse.Namespace) -> int:
     return BLOCKER_EXIT if blockers else 0
 
 
-def _domain(listing: Listing, src: Sources, roles, every: int) -> dict:
-    """Aggregate data-quality checks on EXPLORATION-period rows (ADR-0022)."""
+def _domain(listing: Listing, roles, every: int) -> dict:
+    """Aggregate data-quality checks on EXPLORATION-period rows (ADR-0022).
+
+    Always reads integrity-verified local files; every pre-holdout file must be
+    present before anything is read."""
+    local = Sources(listing, "local")
     cols = {r.key: r.column for r in roles if r.status in RESOLVED and r.column}
     needed = (
         "timestamp",
@@ -232,18 +298,20 @@ def _domain(listing: Listing, src: Sources, roles, every: int) -> dict:
         "neg_risk",
     )
     cols = {k: v for k, v in cols.items() if k in needed}
-    files = sorted(
-        (
-            f
-            for f in listing.files
-            if f.layer == LAYER_DAILY and f.need in PRE_HOLDOUT_NEEDS and src.available(f)
-        ),
+    all_files = sorted(
+        (f for f in listing.files if f.layer == LAYER_DAILY and f.need in PRE_HOLDOUT_NEEDS),
         key=lambda f: f.path,
-    )[::every]
+    )
+    missing = [f.path for f in all_files if not local.present_locally(f)]
+    if missing:
+        return {"skipped": f"{len(missing)} pre-holdout files not in the local cache"}
+    files = all_files[::every]
+    for f in files:  # verify everything before reading anything
+        local.verify_local(f)
     s = DomainSummary()
     for f in files:
         df, st = read_rows(
-            src.open(f),
+            local.open(f),
             [c for k, c in cols.items() if k != "timestamp"],
             ts_column=cols["timestamp"],
             scope=Scope.PRE_HOLDOUT,
@@ -278,8 +346,9 @@ def render_schema_md(r: dict) -> str:
         "",
         "## daily_aligned",
         "",
-        f"Footers read: {d['footers_read']} of {d['files_needed']} needed files"
-        f" (missing locally: {d['footers_missing_locally']}). Total rows: {d['rows_total']:,}"
+        f"Footers read: {d['footers_read']} of {d['files']} required files"
+        f" (not available: {d['missing']}; unreadable: {len(d['unreadable'])})."
+        f" Total rows: {d['rows_total']:,}"
         f" (pre-holdout-side files: {d['rows_pre_holdout_side_files']:,}).",
         f"Timestamp coverage (footer statistics): {d['coverage_utc']}",
         "",
@@ -309,7 +378,8 @@ def render_schema_md(r: dict) -> str:
     for t, c in r["ctf"].items():
         L += [
             f"### {t} ({c['files']} files, footers read {c['footers_read']}"
-            f"{', capped' if c['capped'] else ''}; resolution table: {c['is_resolution_table']})",
+            f"{', SAMPLED (informational table)' if c['sampled'] else ''}"
+            f"; resolution table: {c['is_resolution_table']})",
             "",
         ]
         for k, v in enumerate(c["schema_variants"], 1):
@@ -389,10 +459,14 @@ def cmd_vocab(a: argparse.Namespace) -> int:
             "download the pre-holdout part or use --source remote"
         )
     files = files[:: a.sample_every]
-    df, stats = collect((src.open(f) for f in files), cols)
-    vocab = build_vocab(df, cols, a.examples)
+    clf = DraftClassifier.load(Path(a.classifier)) if a.classifier else None
+    if src.mode == "local":
+        for f in files:  # verify everything before reading anything
+            src.verify_local(f)
+    col = collect((src.open(f) for f in files), cols)
+    vocab = build_vocab(col, cols, a.examples)
     vocab.reader_stats = {
-        **stats,
+        **col.stats,
         "sample_every": a.sample_every,
         "remote_bytes_fetched": src.bytes_fetched(),
     }
@@ -406,8 +480,8 @@ def cmd_vocab(a: argparse.Namespace) -> int:
         f"design-screen hits: {vocab.design_screen_hits:,}"
     )
     print(f"wrote {out_dir / 's_short_vocab.md'} (Git-ignored)")
-    if a.classifier:
-        ev = evaluate_draft(df, cols, DraftClassifier.load(Path(a.classifier)))
+    if clf is not None:
+        ev = evaluate_draft(col, clf)
         (out_dir / "s_short_draft_eval.json").write_text(json.dumps(ev, indent=1, default=str))
         print({k: v for k, v in ev.items() if not k.startswith("audit_sample")})
         print(f"wrote {out_dir / 's_short_draft_eval.json'} (Git-ignored)")
@@ -424,6 +498,8 @@ def render_vocab_md(v, cols: dict[str, str]) -> str:
         f"- Column types: {v.column_types}",
         f"- Markets: {v.n_markets:,}; with varying metadata: {v.markets_with_varying_metadata:,}",
         f"- Markets with null metadata, by field: {v.null_markets}",
+        f"- Rejected (unauthorized or unsupported) metadata parts, counted only: "
+        f"{v.rejected_metadata_parts:,}",
         f"- Reader stats: {v.reader_stats}",
         "",
         "## Category values (markets)",
@@ -465,7 +541,12 @@ def main(argv: list[str] | None = None) -> int:
     a = p.parse_args(argv)
     if getattr(a, "sample_every", 1) < 1:
         sys.exit("--sample-every must be >= 1")
-    return cmd_schema(a) if a.cmd == "schema" else cmd_vocab(a)
+    try:
+        return cmd_schema(a) if a.cmd == "schema" else cmd_vocab(a)
+    except IntegrityError as e:
+        # Fail closed: nothing has been written by this run.
+        print(f"INTEGRITY FAILURE: {e}. No output written.", file=sys.stderr)
+        return INTEGRITY_EXIT
 
 
 if __name__ == "__main__":

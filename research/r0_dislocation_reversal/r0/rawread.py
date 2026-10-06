@@ -21,6 +21,7 @@ timestamp; it is never assigned wholesale to either side.
 from __future__ import annotations
 
 import enum
+from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 from typing import BinaryIO
@@ -54,6 +55,7 @@ class FooterInfo:
     ts_min: int | None
     ts_max: int | None
     ts_stats_complete: bool  # every row group had min/max stats for ts_column
+    duplicate_names: tuple[str, ...] = ()  # field names occurring more than once
 
 
 @dataclass(frozen=True)
@@ -103,7 +105,10 @@ def read_footer(
 ) -> FooterInfo:
     pf = _open(source)
     schema = pf.schema_arrow
-    ts_col = next((c for c in ts_candidates if c in schema.names), None)
+    counts = Counter(schema.names)
+    dups = tuple(sorted(n for n, c in counts.items() if c > 1))
+    # A duplicated timestamp column is ambiguous: no statistics are taken from it.
+    ts_col = next((c for c in ts_candidates if counts.get(c) == 1), None)
     ts_min = ts_max = None
     complete = False
     if ts_col is not None and _is_ts_type(schema.field(ts_col).type):
@@ -114,7 +119,14 @@ def read_footer(
             ts_min = min(s[0] for s in known)
             ts_max = max(s[1] for s in known)
     return FooterInfo(
-        schema, pf.metadata.num_rows, pf.metadata.num_row_groups, ts_col, ts_min, ts_max, complete
+        schema,
+        pf.metadata.num_rows,
+        pf.metadata.num_row_groups,
+        ts_col,
+        ts_min,
+        ts_max,
+        complete,
+        dups,
     )
 
 
@@ -166,6 +178,9 @@ def read_rows(
         raise ValueError(scope)
     pf = _open(source, auth)
     names = pf.schema_arrow.names
+    dups = sorted(n for n, c in Counter(names).items() if c > 1)
+    if dups:
+        raise ValueError(f"duplicate field names {dups}: ambiguous columns; refusing to read")
     cols = list(dict.fromkeys([*columns, ts_column]))
     missing = [c for c in cols if c not in names]
     if missing:

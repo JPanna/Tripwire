@@ -1,8 +1,9 @@
 # R0 data access: layout, holdout guard, and how to run Stages A–C
 
 Governing decisions: ADR-0019 (tooling), ADR-0020 (owner rulings), ADR-0021
-(this design) and ADR-0022 (owner clarifications: PRE-HOLDOUT vs EXPLORATION;
-domain checks). The frozen preregistration is not changed by anything here.
+(this design), ADR-0022 (owner clarifications: PRE-HOLDOUT vs EXPLORATION;
+domain checks) and ADR-0023 (hardening after the independent audit). The
+frozen preregistration is not changed by anything here.
 
 ## 1. Two notions of "before the holdout"
 
@@ -89,18 +90,23 @@ uv run pytest -q && uv run ruff check .
 # Stage B: list only (downloads nothing; Parquet footers are read only if asked)
 uv run python research/r0_dislocation_reversal/scripts/00_fetch.py --list
 # Pin: probe footers (byte ranges, footers only) and write DATA_MANIFEST.{json,md}.
-# Refuses if any needed file's placement cannot be verified from its footer
-# (then inspect, and re-run with --accept-unverified to place such files as
-# "possibly straddling"), or if the manifest already pins another revision
-# (--replace-manifest re-pins on purpose).
+# Every daily_aligned Parquet file (any name, any case of ".parquet") is probed;
+# placement comes only from complete footer timestamp statistics, never from
+# file names. Refuses (no override) if any candidate's placement is unresolved,
+# or if the manifest already pins another revision (--replace-manifest re-pins
+# on purpose).
 uv run python research/r0_dislocation_reversal/scripts/00_fetch.py --list --write-manifest
 
-# Stage C: schema and role mapping from footers (no download needed)
+# Stage C: schema and role mapping from footers (no download needed). Every
+# required daily_aligned file and every file of the CTF resolution table is
+# inspected (no sampling); a missing/unreadable file, schema drift between
+# files, or a duplicated field name is a blocker.
 uv run python research/r0_dislocation_reversal/scripts/01_schema.py schema
 #   exit code 3 = SPEC IMPLEMENTATION BLOCKER (see SCHEMA_REPORT.md); confirm a
 #   candidate only if it has exactly the spec's meaning:
 #   ... 01_schema.py schema --confirm token_id=<column> --confirm shares=<column>
-#   ... --confirm shares=NONE      (no share-quantity column: §3 usdc_amount/price fallback)
+#   ... --confirm shares=NONE      (no share-quantity column: §3 usdc_amount/price fallback;
+#                                   the fallback is used ONLY with this explicit statement)
 #   ... --ctf-resolution-table CTF/<name>   (if no CTF table is named "resolution...")
 
 # Only after you approve the size printed by --list:
@@ -114,14 +120,15 @@ uv run python research/r0_dislocation_reversal/scripts/00_fetch.py --verify --pa
 uv run python research/r0_dislocation_reversal/scripts/01_schema.py vocab \
     --classifier research/r0_dislocation_reversal/proposals/s_short_classifier_DRAFT.toml
 
-# Optional domain checks (ADR-0022): run only after the schema roles are
-# confirmed (the script skips them while any blocker remains). EXPLORATION-period
+# Optional domain checks (ADR-0022): run only after the schema is cleared
+# (complete coverage, no blocker). They always read integrity-verified LOCAL
+# pre-holdout files, so schema coverage can come from --source remote. EXPLORATION-period
 # rows only; aggregate data-quality counts only (nulls, p_event/price outside
 # (0, 1), D outside {-1, +1}, non-positive quantities/amounts, neg_risk = true,
 # code values, field-consistency mismatches). No rows, no events, no returns,
 # no price paths, no SSTR-type statistics.
 uv run python research/r0_dislocation_reversal/scripts/01_schema.py schema \
-    --source local --domain-checks --confirm ...
+    --source remote --domain-checks --confirm ...
 ```
 
 `vocab --source remote --sample-every 7` reads only the needed columns over
@@ -135,8 +142,22 @@ Environment variables:
 - `R0_DATA_ROOT` (optional): moves the data root.
 
 Upstream paths are validated (no absolute paths, `.` or `..` components)
-before any local file is written. Downloads are verified against the
-upstream LFS SHA-256, or the git blob SHA-1 for non-LFS files.
+before any local file is written. Downloads go to a unique temporary file
+created exclusively inside the cache directory (`tempfile.mkstemp`; symlinked
+directories or destinations are refused) and are renamed into place only after
+verification.
+
+**Integrity (one implementation, `r0/integrity.py`).** Every local raw file
+is verified before it is consumed by `--verify`, `schema --source local`,
+`vocab` or the domain checks: byte size, then the manifest SHA-256 if
+recorded, otherwise the Git blob SHA-1 (`git_oid`). A file without usable
+integrity metadata is refused. On any failure the script exits with code 4
+and writes no output.
+
+**S_short metadata projection.** Category/tag values are reduced to string
+tokens immediately after reading; an object contributes only its `label`,
+`name` or `slug` string (in that order). Other nested fields are never read
+into any output; unsupported shapes are counted as rejected and dropped.
 
 ## 6. Files written
 

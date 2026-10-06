@@ -5,8 +5,12 @@ listing (path, size, hashes) and, optionally, Parquet footer timestamp
 statistics (``r0.rawread.read_footer``), which contain no row values.
 
 File naming in ``TimeSeventeen/Polymarket-v1`` could not be observed from the
-agent's environment (2026-10-06). Dates are therefore *inferred* from paths
-with the patterns below and marked ``name`` until footers confirm them.
+agent's environment (2026-10-06). Dates inferred from paths are *hints only*:
+the placement of every ``daily_aligned`` Parquet file (including whether it is
+needed at all) comes only from its footer timestamp statistics. Until a file
+has been probed successfully its need is ``unresolved``, and an unresolved
+file blocks the manifest and any download. ``.parquet`` is matched
+case-insensitively everywhere (``is_parquet``).
 """
 
 from __future__ import annotations
@@ -63,9 +67,15 @@ class FileEntry:
     side: str = ""  # pre_holdout | holdout | straddle | unverified | unknown | n/a
     need: str = ""  # see classify()
     notes: list[str] = field(default_factory=list)
-    # False when a footer probe was attempted but failed or found incomplete
-    # timestamp statistics; such files are placed conservatively (classify).
+    # True: footer timestamp statistics were read completely (authoritative).
+    # False: a probe was attempted but failed or was incomplete. None: not probed.
     placement_verified: bool | None = None
+    # Side suggested by the file name only (never authoritative).
+    name_hint: str | None = None
+
+
+def is_parquet(path: str) -> bool:
+    return path.lower().endswith(".parquet")
 
 
 def layer_of(path: str) -> str:
@@ -113,36 +123,45 @@ def side_of(first_ts: int, last_ts: int) -> str:
     return "straddle"
 
 
+def _name_hint(first_day: str | None, last_day: str | None) -> str:
+    if not first_day or not last_day:
+        return "undated"
+    first, last = date.fromisoformat(first_day), date.fromisoformat(last_day)
+    if last < PINNED_FIRST_DAY:
+        return "before-pinned-range"
+    return side_of(_day_start(first), _day_start(last + timedelta(days=1)) - 1)
+
+
 def classify(e: FileEntry) -> FileEntry:
     """Assign layer, date range, partition side and need for one file.
 
     need values:
-      required-pre-holdout / required-holdout / required-both   (daily_aligned)
+      required-pre-holdout / required-holdout / required-both   (daily_aligned,
+                                     from footer evidence only)
+      unresolved                     daily_aligned Parquet without verified
+                                     footer evidence (blocks manifest/download)
       required-ctf-resolution        all resolution files, whatever their date
       optional-ctf-mapping           CTF preparation files (slot mapping support)
       required-card                  dataset card / top-level docs
-      not-needed                     out of scope or out of the pinned range
-      unknown                        cannot be classified from the listing
+      not-needed                     out of scope, or footer-verified to hold
+                                     only rows before the pinned range
+      unknown                        CTF file of an unrecognised table
     """
     e.layer = layer_of(e.path)
-    if e.ts_min is None:
-        days = infer_days(e.path)
-        if days:
-            e.first_day, e.last_day = days[0].isoformat(), days[1].isoformat()
-            e.date_source = "name"
-    else:
+    days = infer_days(e.path)
+    name_first = days[0].isoformat() if days else None
+    name_last = days[1].isoformat() if days else None
+    e.name_hint = _name_hint(name_first, name_last)
+    verified = e.placement_verified is True and e.ts_min is not None and e.ts_max is not None
+    if verified:
         e.date_source = "footer"
         e.first_day = datetime.fromtimestamp(e.ts_min, UTC).date().isoformat()
-        e.last_day = datetime.fromtimestamp(e.ts_max or e.ts_min, UTC).date().isoformat()
-
-    if e.ts_min is not None and e.ts_max is not None:
+        e.last_day = datetime.fromtimestamp(e.ts_max, UTC).date().isoformat()
         e.side = side_of(e.ts_min, e.ts_max)
-    elif e.first_day and e.last_day:
-        first = date.fromisoformat(e.first_day)
-        last = date.fromisoformat(e.last_day)
-        e.side = side_of(_day_start(first), _day_start(last + timedelta(days=1)) - 1)
     else:
-        e.side = "unknown"
+        e.date_source = "name" if days else None
+        e.first_day, e.last_day = name_first, name_last
+        e.side = "unverified" if e.placement_verified is False else "unprobed"
 
     low = e.path.lower()
     if e.layer == "" or (e.layer not in (LAYER_DAILY, LAYER_MULTI, LAYER_ORDERFILLED, LAYER_CTF)):
@@ -156,7 +175,9 @@ def classify(e: FileEntry) -> FileEntry:
         e.need, e.side = "not-needed", "n/a"
         return e
     if e.layer == LAYER_CTF:
-        if any(k in low for k in CTF_NEEDED):
+        if not is_parquet(e.path):
+            e.need, e.side = "not-needed", "n/a"
+        elif any(k in low for k in CTF_NEEDED):
             e.need = "required-ctf-resolution"
         elif any(k in low for k in CTF_MAPPING):
             e.need = "optional-ctf-mapping"
@@ -167,24 +188,24 @@ def classify(e: FileEntry) -> FileEntry:
             e.notes.append("CTF file with no recognised table name; inspect manually")
         return e
     # daily_aligned
-    if not low.endswith(".parquet"):
-        e.need, e.side = ("not-needed", "n/a")
-        return e
-    if e.placement_verified is False:
-        # Unverifiable placement: never assign the file wholesale to one side.
-        # It joins the pre-holdout download part; rows are split at read time.
-        e.side, e.need = "unverified", "required-both"
-        e.notes.append("placement unverified: treated as possibly straddling")
-        return e
-    if e.side == "unknown":
-        e.need = "unknown"
-        e.notes.append("no date in name; run --probe-footers")
-        return e
-    if e.last_day and date.fromisoformat(e.last_day) < PINNED_FIRST_DAY:
+    if not is_parquet(e.path):
         e.need, e.side = "not-needed", "n/a"
         return e
-    if e.first_day and date.fromisoformat(e.first_day) > DATASET_LAST_DAY:
-        e.notes.append("dated after the stated dataset end 2026-04-28")
+    if not verified:
+        # File names are never authoritative: whatever the name suggests, the
+        # file may hold study-period rows until its footer shows otherwise.
+        e.need = "unresolved"
+        e.notes.append(
+            "placement unverified (footer probe failed or incomplete)"
+            if e.placement_verified is False
+            else "placement not yet verified from footer statistics"
+        )
+        return e
+    if e.ts_max < _day_start(PINNED_FIRST_DAY):
+        e.need, e.side = "not-needed", "n/a"
+        return e
+    if date.fromisoformat(e.first_day) > DATASET_LAST_DAY:
+        e.notes.append("rows after the stated dataset end 2026-04-28")
     e.need = {
         "pre_holdout": "required-pre-holdout",
         "holdout": "required-holdout",
@@ -193,6 +214,11 @@ def classify(e: FileEntry) -> FileEntry:
     if e.side == "straddle":
         e.notes.append("crosses the partition boundary: rows split by timestamp")
     return e
+
+
+def unresolved(files: list[FileEntry]) -> list[FileEntry]:
+    """daily_aligned Parquet files whose placement is not footer-verified."""
+    return [f for f in files if f.need == "unresolved"]
 
 
 @dataclass
@@ -273,9 +299,9 @@ def render(listing: Listing) -> str:
         f"  listed at (UTC)   : {listing.listed_at_utc}",
         "  footers probed    : "
         + (
-            "yes (timestamp statistics only)"
+            "yes: every candidate probed successfully (timestamp statistics only)"
             if listing.footers_probed
-            else "no (dates inferred from file names; unverified)"
+            else "NO: placement is not authoritative (file names are hints only)"
         ),
         f"  partition boundary: rows with block_timestamp < {PARTITION_BOUNDARY} "
         f"({PARTITION_BOUNDARY_DAY.isoformat()}T00:00:00Z) -> pre-holdout side; >= -> holdout side",
@@ -294,6 +320,7 @@ def render(listing: Listing) -> str:
         "required-pre-holdout",
         "required-both",
         "required-holdout",
+        "unresolved",
         "unknown",
     ):
         sel = [f for f in files if f.need == need]
@@ -318,17 +345,32 @@ def render(listing: Listing) -> str:
     ]
     if unk:
         lines.append(f"  UNCLASSIFIED (not counted above)      : {gib(unk)}")
+    unres = unresolved(files)
+    if unres:
+        lines += [
+            "",
+            f"PLACEMENT UNRESOLVED: {len(unres)} daily_aligned files, "
+            f"{gib(sum(f.size for f in unres))}. No manifest or download until every one is "
+            "footer-verified. Provisional split by FILE NAME ONLY (not authoritative):",
+        ]
+        for hint in ("pre_holdout", "straddle", "holdout", "before-pinned-range", "undated"):
+            sel = [f for f in unres if f.name_hint == hint]
+            lines.append(
+                f"  name suggests {hint:<20} {len(sel):>5} files  {gib(sum(f.size for f in sel))}"
+            )
     straddle = [
-        f
-        for f in files
-        if f.side in ("straddle", "unverified") and f.need.startswith(("required", "optional"))
+        f for f in files if f.side == "straddle" and f.need.startswith(("required", "optional"))
     ]
     lines += ["", f"Files crossing the pre-holdout/holdout boundary: {len(straddle)}"]
     lines += [f"  {f.path}  [{f.side}; {f.date_source}]" for f in straddle[:50]]
     if len(straddle) > 50:
         lines.append(f"  ... and {len(straddle) - 50} more (see the manifest)")
     gaps = missing_days(files)
-    lines += ["", f"daily_aligned UTC days with no file in 2024-12-30 -> 2026-04-28: {len(gaps)}"]
+    lines += [
+        "",
+        f"daily_aligned UTC days with no file in 2024-12-30 -> 2026-04-28: {len(gaps)}"
+        + ("" if listing.footers_probed else " (from file-name hints; not authoritative)"),
+    ]
     if gaps:
         lines.append("  " + ", ".join(gaps[:40]) + (" ..." if len(gaps) > 40 else ""))
     notes = [f for f in files if f.notes and f.need != "not-needed"]

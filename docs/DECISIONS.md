@@ -483,7 +483,8 @@ Template:
 
 - Date: 2026-10-06
 - Status: Accepted (owner, 2026-10-06, with the terminology clarification in
-  ADR-0022; was Proposed)
+  ADR-0022; was Proposed); placement, integrity, schema-coverage and
+  share-fallback clauses amended by ADR-0023 (owner, 2026-10-06)
 - Origin: agent (Claude Code, implementing ADR-0020)
 - Context: ADR-0020 requires timestamp-derived partitions and a guard that
   keeps holdout rows away from research code, without losing pre-holdout rows
@@ -569,3 +570,37 @@ Template:
   restrict research operations to the exploration period. The Stage A–C
   commit is an implementation review candidate, not a new preregistration
   freeze.
+
+## ADR-0023 — Stage A–C hardening after the independent (Codex) audit
+
+- Date: 2026-10-06
+- Status: Accepted
+- Origin: owner (adopting the confirmed findings of the Codex audit of
+  `research/r0-uafr` at `23a8eda`, verdict REJECT A–C)
+- Decision (amends ADR-0021 where they differ):
+  - **Integrity before consumption.** One implementation (`r0/integrity.py`)
+    is used by downloads, `--verify`, schema, vocabulary and domain checks:
+    byte size, then SHA-256 if the manifest has one, otherwise the Git blob
+    SHA-1 (`git_oid`); no usable metadata means refusal. Failures stop the run
+    with no output.
+  - **Secure downloads.** Unique temporary files created exclusively inside
+    the cache directory; symlinked directories or destinations are refused;
+    the rename happens only after verification and a containment re-check.
+  - **Metadata projection.** Category/tag values are projected to authorized
+    string tokens (`label`, `name`, `slug` of an object; strings); nothing
+    else from nested values reaches counts, examples or audit output.
+    Variant ordering is deterministic.
+  - **Placement from footers only.** Every `daily_aligned` Parquet file
+    (case-insensitive extension) is a candidate until its footer timestamp
+    statistics place it; names are hints. Unresolved placement blocks the
+    manifest and downloads, with no override (replaces `--accept-unverified`).
+  - **Complete schema coverage.** Every required `daily_aligned` file and
+    every file of the CTF resolution table is inspected; missing or
+    unreadable files and schema drift between files are blockers; domain
+    checks run only when the schema is cleared.
+  - **Duplicate field names** block before role mapping.
+  - **Share fallback** (`usdc_amount / price`) only after the explicit owner
+    statement `shares=NONE`; an unrecognised share column is never treated as
+    absent.
+- Consequences: Stage A–C remains an implementation review candidate; no
+  Stage D work, no event detection, no corpus download.

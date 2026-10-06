@@ -9,6 +9,7 @@ rows only.
 from __future__ import annotations
 
 import re
+from collections import Counter
 from dataclasses import asdict, dataclass, field
 
 import polars as pl
@@ -285,38 +286,113 @@ def daily_blockers(results: list[RoleResult], variants: list[SchemaVariant]) -> 
                     "No, if the owner confirms a candidate with identical meaning; otherwise yes.",
                 )
             )
+    # §3 uses usdc_amount / price only if daily_aligned has NO share column. A
+    # heuristic finding no candidate is not evidence of absence, so the share
+    # role has three states: mapped (CONFIRMED), confirmed absent
+    # (CONFIRMED_ABSENT, i.e. --confirm shares=NONE) and unresolved (anything
+    # else). Only the first two can clear; the fallback needs the second.
     shares = next((r for r in results if r.key == "shares"), None)
-    if shares is not None and shares.status in ("CANDIDATES", "AMBIGUOUS"):
-        # §3 uses usdc_amount / price only if daily_aligned has no share column.
-        # A possible share column must therefore be settled by the owner first.
+    state = shares.status if shares is not None else "MISSING"
+    if state not in RESOLVED and state != "CONFIRMED_ABSENT":
         out.append(
             Blocker(
                 "shares",
                 "§3 q_r: a share-quantity column if daily_aligned has one; otherwise "
                 "usdc_amount / price",
-                f"possible share-quantity column(s) {shares.candidates or [shares.column]} "
-                f"({shares.status}); whether daily_aligned 'has one' is undecided",
+                f"share role unresolved ({state}"
+                + (
+                    f"; candidates: {', '.join(shares.candidates)}"
+                    if shares and shares.candidates
+                    else "; no heuristic candidate, which does not show that none exists"
+                )
+                + ")",
                 avail,
-                "Owner confirms --confirm shares=<column> if it is a share quantity, or "
-                "--confirm shares=NONE if no column is; units and gross/net are checked at K0.",
+                "Owner states which column is the share quantity (--confirm shares=<column>) or "
+                "that none exists (--confirm shares=NONE); units and gross/net are checked at K0.",
                 "No",
             )
         )
-    elif not (
-        resolved(results, "shares")
-        or (resolved(results, "usdc_amount") and resolved(results, "price"))
+    elif state == "CONFIRMED_ABSENT" and not (
+        resolved(results, "usdc_amount") and resolved(results, "price")
     ):
         out.append(
             Blocker(
                 "shares",
                 "§3 q_r: share-quantity column, else usdc_amount / price",
-                "neither a share-quantity column nor both usdc_amount and price are resolved",
+                "no share column (owner-confirmed) and usdc_amount / price not both resolved",
                 avail,
                 AMENDMENT_HINTS["shares"],
                 "Yes",
             )
         )
     return out
+
+
+def duplicate_field_blocker(table: str, schemas: list[tuple[str, pa.Schema]]) -> Blocker | None:
+    """Duplicate field names in any file of a table block before role mapping.
+
+    Works on the schemas' field lists (never on a name-keyed dict, which would
+    collapse duplicates). Identical types do not make duplicates acceptable.
+    """
+    found: dict[str, list[str]] = {}
+    for path, schema in schemas:
+        for name, n in Counter(schema.names).items():
+            if n > 1:
+                types = [str(f.type) for f in schema if f.name == name]
+                found.setdefault(name, []).append(f"{path} ({', '.join(types)})")
+    if not found:
+        return None
+    return Blocker(
+        f"{table}: duplicate field names",
+        "§2.1 column mapping check: each role maps to exactly one column",
+        "duplicate field names make every role on them ambiguous: "
+        + "; ".join(f"`{n}` in {len(ps)} file(s), e.g. {ps[0]}" for n, ps in sorted(found.items())),
+        sorted(found),
+        "STOP: role mapping is not attempted for this table. The data must be corrected, or "
+        "the owner decides how the duplicated columns are disambiguated.",
+        "Yes, unless the data is corrected.",
+    )
+
+
+def drift_blocker(table: str, variants: list[SchemaVariant]) -> Blocker | None:
+    """Any schema difference between the required files of a table blocks."""
+    if len(variants) <= 1:
+        return None
+    desc = []
+    base = {(c, t) for c, t, _ in variants[0].columns}
+    for v in variants:
+        cols = {(c, t) for c, t, _ in v.columns}
+        desc.append(
+            f"{v.files} file(s) {v.first_day}..{v.last_day} (e.g. {v.example_path}): "
+            f"+{sorted(cols - base)} -{sorted(base - cols)}"
+        )
+    return Blocker(
+        f"{table}: schema drift",
+        "§2.1 column mapping check over every pinned file",
+        f"{len(variants)} different schemas among the required files: " + " | ".join(desc),
+        [],
+        "STOP: the owner decides whether the differing files are usable and how.",
+        "Possibly",
+    )
+
+
+def coverage_blocker(table: str, missing: list[str], unreadable: list[str]) -> Blocker | None:
+    """Every required file must be present and its footer inspected."""
+    if not missing and not unreadable:
+        return None
+    parts = []
+    if missing:
+        parts.append(f"{len(missing)} required file(s) not available, e.g. {missing[:3]}")
+    if unreadable:
+        parts.append(f"{len(unreadable)} footer(s) unreadable, e.g. {unreadable[:3]}")
+    return Blocker(
+        f"{table}: incomplete schema coverage",
+        "§2.1 column mapping check over every pinned file",
+        "; ".join(parts),
+        [],
+        "Download/verify the missing files (or use --source remote) and re-run.",
+        "No",
+    )
 
 
 def ctf_blockers(
@@ -373,7 +449,7 @@ def ctf_table_key(path: str) -> str:
     parts = [p for p in path.split("/")[1:] if not re.match(r"(year|month|day|date)=", p)]
     if len(parts) > 1:
         return "CTF/" + parts[0]
-    stem = re.sub(r"\.parquet$", "", parts[0]) if parts else "CTF"
+    stem = re.sub(r"\.parquet$", "", parts[0], flags=re.I) if parts else "CTF"
     stem = re.sub(r"[-_]?\d[\d_-]*$", "", stem) or stem
     return "CTF/" + stem
 

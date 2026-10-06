@@ -30,7 +30,13 @@ def pq_bytes(t: pa.Table, rg: int | None = None) -> bytes:
     return buf.getvalue()
 
 
-def daily(rows: list[tuple[int, str, str]], drop: tuple[str, ...] = (), rename=None) -> bytes:
+def daily(
+    rows: list[tuple[int, str, str]],
+    drop: tuple[str, ...] = (),
+    rename=None,
+    extra_cols: dict | None = None,
+    duplicate: tuple[str, pa.DataType] | None = None,
+) -> bytes:
     """rows: (ts, condition_id, question)."""
     n = len(rows)
     cols = {
@@ -57,7 +63,13 @@ def daily(rows: list[tuple[int, str, str]], drop: tuple[str, ...] = (), rename=N
         cols.pop(d)
     for a, b in (rename or {}).items():
         cols[b] = cols.pop(a)
-    return pq_bytes(pa.table(cols), rg=2)
+    for k, v in (extra_cols or {}).items():
+        cols[k] = v
+    t = pa.table(cols)
+    if duplicate is not None:  # a second column with an existing name
+        name, dtype = duplicate
+        t = t.append_column(pa.field(name, dtype), pa.array([None] * n, dtype))
+    return pq_bytes(t, rg=2)
 
 
 def ctf_res() -> bytes:
@@ -131,9 +143,10 @@ def test_list_downloads_nothing_and_classifies(env, capsys, data_root):
     assert fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint]) == 0
     out = capsys.readouterr().out
     assert f"pinned commit sha : {SHA}" in out
-    # Names alone cannot reveal that "2025-09" holds post-boundary rows: the listing
-    # says dates are unverified, and --probe-footers (next test) finds the straddle.
-    assert "dates inferred from file names; unverified" in out
+    # Names alone are never authoritative: without footers every daily_aligned
+    # Parquet file is unresolved (here "2025-09" really straddles the boundary).
+    assert "NO: placement is not authoritative" in out
+    assert "PLACEMENT UNRESOLVED: 5 daily_aligned files" in out
     assert "Files crossing the pre-holdout/holdout boundary: 0" in out
     assert not any(p.startswith("/cdn/") for p, _ in hub.log)  # no file bytes fetched
     assert not (data_root / "raw").exists()
@@ -206,21 +219,54 @@ def test_write_manifest_refuses_silent_repin_and_keeps_local_hashes(env, capsys)
     assert fetch.main([*base, "--replace-manifest"]) == 0
 
 
-def test_unverifiable_placement_is_conservative(env, capsys):
+def test_unprobeable_required_candidate_blocks_manifest_and_download(env, capsys):
     t = pa.table({"block_timestamp": pa.array([B + 5, B - 5], pa.int64()), "x": [1, 2]})
     buf = io.BytesIO()
     pq.write_table(t, buf, write_statistics=False)
     hub, fetch, _ = env(extra={"daily_aligned/2025-12-01.parquet": buf.getvalue()})
     base = ["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"]
-    with pytest.raises(SystemExit, match="unverified"):
+    with pytest.raises(SystemExit, match="refusing to write the manifest"):
         fetch.main(base)
     assert not fetch.MANIFEST_JSON.exists()
-    assert fetch.main([*base, "--accept-unverified"]) == 0
+    with pytest.raises(SystemExit):  # the old override no longer exists
+        fetch.main([*base, "--accept-unverified"])
+    assert not fetch.MANIFEST_JSON.exists()
+    # A hand-made manifest with an unresolved entry cannot drive a download either.
+    fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint])  # names only
+    lst = fetch.Listing(
+        REPO,
+        "main",
+        SHA,
+        "t",
+        hub.endpoint,
+        True,
+        [fetch.classify(fetch.FileEntry("daily_aligned/2025-12-01.parquet", 10, "a" * 40, None))],
+    )
+    fetch.MANIFEST_JSON.write_text(lst.to_json())
+    with pytest.raises(SystemExit, match="unverified placements"):
+        fetch.main(["--download", "pre-holdout", "--approve-bytes", "0"])
+
+
+def test_misleading_old_name_and_mixed_case_extension(env, capsys):
+    """A file named as a 2023 day holding exploration rows, and a .PARQUET file."""
+    rows = [(EXPLORATION_START + 50 * DAY, "cX", "BTC hidden in an old-named file")]
+    hub, fetch, _ = env(
+        extra={
+            "daily_aligned/2023-01-01.parquet": daily(rows),
+            "daily_aligned/2025-03-03.PARQUET": daily(rows),
+        }
+    )
+    fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"])
     lst = json.loads(fetch.MANIFEST_JSON.read_text())
-    f = next(f for f in lst["files"] if f["path"] == "daily_aligned/2025-12-01.parquet")
-    # named as a holdout day, but its rows cannot be bounded: never wholesale holdout
-    assert (f["side"], f["need"]) == ("unverified", "required-both")
-    assert lst["footers_probed"] is False
+    by = {f["path"]: f for f in lst["files"]}
+    for path in ("daily_aligned/2023-01-01.parquet", "daily_aligned/2025-03-03.PARQUET"):
+        assert by[path]["need"] == "required-pre-holdout", path
+        assert by[path]["date_source"] == "footer" and by[path]["placement_verified"] is True
+    assert by["daily_aligned/2023-01-01.parquet"]["name_hint"] == "before-pinned-range"
+    # footer-verified as older than the pinned range: authoritatively not needed
+    assert by["daily_aligned/2024-12-29.parquet"]["need"] == "not-needed"
+    assert by["daily_aligned/2024-12-29.parquet"]["date_source"] == "footer"
+    assert lst["footers_probed"] is True
 
 
 def _prepare_local(env, **kw):
@@ -321,10 +367,16 @@ def test_missing_required_role_is_a_blocker(env, capsys):
 def test_domain_checks_use_exploration_rows_only(env, capsys):
     _, _, schema = _prepare_local(env)
     # ADR-0022: refused until every required role is confirmed.
-    schema.main(["schema", "--source", "local", "--domain-checks"])
+    schema.main(["schema", "--source", "remote", "--domain-checks"])
     dc = json.loads(schema.REPORT_JSON.read_text())["domain_checks"]
     assert "skipped" in dc
-    schema.main(["schema", "--source", "local", "--domain-checks", *CONFIRM])
+    # Local schema coverage is incomplete (holdout files not downloaded): no domain checks.
+    assert schema.main(["schema", "--source", "local", "--domain-checks", *CONFIRM]) == 3
+    rep = json.loads(schema.REPORT_JSON.read_text())
+    assert "skipped" in rep["domain_checks"]
+    assert any("incomplete schema coverage" in b["role"] for b in rep["blockers"])
+    # Complete coverage (footers via remote) and cleared roles: checks run on local files.
+    assert schema.main(["schema", "--source", "remote", "--domain-checks", *CONFIRM]) == 0
     dc = json.loads(schema.REPORT_JSON.read_text())["domain_checks"]
     # pre-holdout files: 1 trailing + 3 + 1 exploration + 1 embargo row; 2 holdout rows.
     # Only the 4 exploration-period rows are checked.
@@ -392,3 +444,147 @@ def test_vocab_reads_only_permitted_columns(env, capsys, monkeypatch):
     assert seen and all(
         set(c) <= allowed and ts == "block_timestamp" and sc == "pre_holdout" for c, ts, sc in seen
     )
+
+
+# --- Codex finding 1: integrity before any local consumption -----------------
+
+TARGET = "daily_aligned/2025-02-01.parquet"
+
+
+def _cache(data_root):
+    return data_root / "raw" / f"Owner__Data-v1@{SHA}"
+
+
+def _prepare_all_local(env, **kw):
+    hub, fetch, schema = env(**kw)
+    fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"])
+    files = fetch.Listing.from_json(fetch.MANIFEST_JSON.read_text()).files
+    for part in ("pre-holdout", "holdout", "ctf"):
+        total = sum(f.size for f in fetch.part_files(files, part))
+        assert fetch.main(["--download", part, "--approve-bytes", str(total)]) == 0
+    return hub, fetch, schema
+
+
+def _set_manifest(fetch, path, **changes):
+    lst = json.loads(fetch.MANIFEST_JSON.read_text())
+    for f in lst["files"]:
+        if f["path"] == path:
+            f.update(changes)
+    fetch.MANIFEST_JSON.write_text(json.dumps(lst))
+
+
+def _tamper(file, how):
+    import os
+
+    file.chmod(0o644)
+    data = bytearray(file.read_bytes())
+    if how == "size":
+        data += b"x"
+    else:  # same size, different content
+        data[len(data) // 2] ^= 0xFF
+    file.write_bytes(bytes(data))
+    os.chmod(file, 0o444)
+
+
+@pytest.mark.parametrize("case", ["wrong-size", "wrong-sha256", "wrong-git-sha1", "no-metadata"])
+def test_integrity_failures_prevent_schema_vocab_and_domain_output(env, capsys, data_root, case):
+    _, fetch, schema = _prepare_all_local(env, lfs=(case != "wrong-git-sha1"))
+    assert schema.main(["schema", "--source", "local", *CONFIRM]) == 0  # clean baseline
+    f = _cache(data_root) / TARGET
+    if case == "wrong-size":
+        _tamper(f, "size")
+    elif case == "wrong-sha256":
+        _tamper(f, "same-size")
+    elif case == "wrong-git-sha1":
+        _set_manifest(fetch, TARGET, sha256=None)  # non-LFS: only the git oid remains
+        assert fetch.main(["--verify"]) == 0  # git-oid path accepts the good file
+        _tamper(f, "same-size")
+    else:
+        _set_manifest(fetch, TARGET, sha256=None, git_oid="")
+    assert fetch.main(["--verify"]) == 1  # the one shared check, via --verify
+    out_dir = data_root / "exploration" / "inspection"
+    # vocab (needs the earlier schema report for its column mapping)
+    assert schema.main(["vocab", "--source", "local"]) == 4
+    assert not out_dir.exists()
+    for args in (["--source", "local"], ["--source", "remote", "--domain-checks"]):
+        schema.REPORT_JSON.unlink()
+        schema.REPORT_MD.unlink(missing_ok=True)
+        assert schema.main(["schema", *args, *CONFIRM]) == 4, args
+        assert not schema.REPORT_JSON.exists() and not schema.REPORT_MD.exists()
+        schema.REPORT_JSON.write_text("{}")  # placeholder so unlink works next round
+    assert "INTEGRITY FAILURE" in capsys.readouterr().err
+
+
+# --- Codex finding 5: complete schema coverage --------------------------------
+
+
+def _blocker_roles(schema):
+    return [b["role"] for b in json.loads(schema.REPORT_JSON.read_text())["blockers"]]
+
+
+def test_full_local_coverage_clears_and_a_missing_daily_file_blocks(env, capsys, data_root):
+    _, _, schema = _prepare_all_local(env)
+    assert schema.main(["schema", "--source", "local", "--domain-checks", *CONFIRM]) == 0
+    (_cache(data_root) / "daily_aligned/2025-11-01.parquet").unlink()
+    assert schema.main(["schema", "--source", "local", "--domain-checks", *CONFIRM]) == 3
+    rep = json.loads(schema.REPORT_JSON.read_text())
+    assert any("daily_aligned: incomplete schema coverage" == r for r in _blocker_roles(schema))
+    assert "skipped" in rep["domain_checks"]
+
+
+def test_missing_required_ctf_file_blocks(env, capsys, data_root):
+    _, _, schema = _prepare_all_local(env)
+    (_cache(data_root) / "CTF/resolutions/2025.parquet").unlink()
+    assert schema.main(["schema", "--source", "local", *CONFIRM]) == 3
+    assert "CTF/resolutions: incomplete schema coverage" in _blocker_roles(schema)
+
+
+def test_drift_in_final_daily_file_blocks(env, capsys):
+    last = daily([(B + 30 * DAY, "cH", "q")], extra_cols={"new_col": [1]})
+    hub, fetch, schema = env(extra={"daily_aligned/2025-11-01.parquet": last})
+    fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"])
+    assert schema.main(["schema", "--source", "remote", *CONFIRM]) == 3
+    assert "daily_aligned: schema drift" in _blocker_roles(schema)
+
+
+def test_ctf_resolution_drift_after_file_50_blocks(env, capsys):
+    extra = {f"CTF/resolutions/part-{i:03d}.parquet": ctf_res() for i in range(55)}
+    t = pa.table(
+        {
+            "condition_id": ["c9"],
+            "block_timestamp": pa.array([B + 9], pa.int64()),
+            "payout_numerators": [[1, 0]],
+            "outcome_slot_count": pa.array([2], pa.int32()),
+            "late_extra": [1],
+        }
+    )
+    extra["CTF/resolutions/part-055.parquet"] = pq_bytes(t)  # 57th file in path order
+    hub, fetch, schema = env(extra=extra)
+    fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"])
+    assert schema.main(["schema", "--source", "remote", *CONFIRM]) == 3
+    rep = json.loads(schema.REPORT_JSON.read_text())
+    assert rep["ctf"]["CTF/resolutions"]["footers_read"] == 57  # no cap
+    assert not rep["ctf"]["CTF/resolutions"]["sampled"]
+    assert "CTF/resolutions: schema drift" in _blocker_roles(schema)
+
+
+# --- Codex finding 6: duplicate field names -----------------------------------
+
+
+@pytest.mark.parametrize(
+    "dup,extra_confirm",
+    [
+        (("p_event", pa.float64()), []),
+        (("p_event", pa.string()), []),
+        (("asset_id", pa.string()), []),  # token_id=asset_id is confirmed in CONFIRM
+    ],
+    ids=["same-type", "different-type", "confirmed-candidate"],
+)
+def test_duplicate_fields_block_before_role_mapping(env, capsys, dup, extra_confirm):
+    bad = daily([(EXPLORATION_START + 60 * DAY, "cD", "q")], duplicate=dup)
+    hub, fetch, schema = env(extra={"daily_aligned/2025-03-02.parquet": bad})
+    fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"])
+    assert schema.main(["schema", "--source", "remote", *CONFIRM, *extra_confirm]) == 3
+    rep = json.loads(schema.REPORT_JSON.read_text())
+    assert "daily_aligned: duplicate field names" in _blocker_roles(schema)
+    assert rep["daily_aligned"]["roles"] == []  # role mapping not attempted

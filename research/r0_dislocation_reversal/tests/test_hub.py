@@ -147,26 +147,31 @@ def test_server_ignoring_range_is_refused(fake_hub_factory):
         RemoteFile(c, c.file_url(REPO, SHA, "f.parquet"), 10).read(4)
 
 
+def _no_temp_files(d):
+    return not any(p.name.endswith(".part") for p in d.rglob("*"))
+
+
 def test_download_verifies_and_is_read_only(hub, tmp_path):
     c = client(hub)
+    cache = tmp_path / "cache"
     data = hub.files["daily_aligned/2025-10-08.parquet"]
-    dest = tmp_path / "cache" / "x.parquet"
+    dest = cache / "x.parquet"
     url = c.file_url(REPO, SHA, "daily_aligned/2025-10-08.parquet")
-    got = c.download(url, dest, len(data), hashlib.sha256(data).hexdigest())
+    got = c.download(url, dest, len(data), hashlib.sha256(data).hexdigest(), root=cache)
     assert got == hashlib.sha256(data).hexdigest()
     assert not (dest.stat().st_mode & stat.S_IWUSR)
-    assert c.download(url, dest, len(data), got) == got  # existing, verified, kept
-    bad = tmp_path / "cache" / "bad.parquet"
+    assert c.download(url, dest, len(data), got, root=cache) == got  # existing, verified, kept
+    bad = cache / "bad.parquet"
     with pytest.raises(HubError, match="verification failed"):
-        c.download(url, bad, len(data), "0" * 64)
-    assert not bad.exists() and not bad.with_name("bad.parquet.part").exists()
+        c.download(url, bad, len(data), "0" * 64, root=cache)
+    assert not bad.exists() and _no_temp_files(cache)
     with pytest.raises(HubError, match="does not match"):
-        c.download(url, dest, len(data), "0" * 64)
+        c.download(url, dest, len(data), "0" * 64, root=cache)
     # a manifest size that disagrees with the bytes fails even when the hash matches
-    other = tmp_path / "cache" / "size.parquet"
+    other = cache / "size.parquet"
     with pytest.raises(HubError, match="verification failed"):
-        c.download(url, other, len(data) + 1, hashlib.sha256(data).hexdigest())
-    assert not other.exists()
+        c.download(url, other, len(data) + 1, hashlib.sha256(data).hexdigest(), root=cache)
+    assert not other.exists() and _no_temp_files(cache)
 
 
 def test_download_without_lfs_hash_uses_git_blob_sha1(hub, tmp_path):
@@ -174,15 +179,105 @@ def test_download_without_lfs_hash_uses_git_blob_sha1(hub, tmp_path):
     data = hub.files["README.md"]
     url = c.file_url(REPO, SHA, "README.md")
     oid = hashlib.sha1(b"blob %d\0" % len(data) + data).hexdigest()
-    with pytest.raises(HubError, match="no upstream hash"):
-        c.download(url, tmp_path / "r0.md", len(data), None, None)
+    with pytest.raises(HubError, match="no usable integrity metadata"):
+        c.download(url, tmp_path / "r0.md", len(data), None, None, root=tmp_path)
     for size, git_oid in ((len(data) + 1, oid), (len(data), "0" * 40)):
         d = tmp_path / f"r{size}{git_oid[:2]}.md"
         with pytest.raises(HubError, match="verification failed"):
-            c.download(url, d, size, None, git_oid)
-        assert not d.exists() and not d.with_name(d.name + ".part").exists()
-    got = c.download(url, tmp_path / "ok.md", len(data), None, oid)
+            c.download(url, d, size, None, git_oid, root=tmp_path)
+        assert not d.exists() and _no_temp_files(tmp_path)
+    got = c.download(url, tmp_path / "ok.md", len(data), None, oid, root=tmp_path)
     assert got == hashlib.sha256(data).hexdigest()
+
+
+# --- Codex finding 2: secure temporary files and containment -----------------
+
+
+def _outside_target(tmp_path):
+    out = tmp_path / "outside" / "victim.bin"
+    out.parent.mkdir()
+    out.write_bytes(b"precious")
+    out.chmod(0o640)
+    return out
+
+
+def _unchanged(out):
+    return out.read_bytes() == b"precious" and stat.S_IMODE(out.stat().st_mode) == 0o640
+
+
+def test_preexisting_part_symlink_cannot_redirect_the_write(hub, tmp_path):
+    import os
+
+    c = client(hub)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    out = _outside_target(tmp_path)
+    data = hub.files["README.md"]
+    dest = cache / "README.md"
+    os.symlink(out, cache / "README.md.part")  # the old predictable temp name
+    got = c.download(
+        c.file_url(REPO, SHA, "README.md"),
+        dest,
+        len(data),
+        hashlib.sha256(data).hexdigest(),
+        root=cache,
+    )
+    assert got == hashlib.sha256(data).hexdigest() and dest.read_bytes() == data
+    assert not dest.is_symlink() and _unchanged(out)
+    assert (cache / "README.md.part").is_symlink()  # left untouched, never written through
+
+
+def test_destination_symlink_is_refused(hub, tmp_path):
+    import os
+
+    c = client(hub)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    out = _outside_target(tmp_path)
+    os.symlink(out, cache / "README.md")
+    data = hub.files["README.md"]
+    with pytest.raises(HubError, match="symlink"):
+        c.download(
+            c.file_url(REPO, SHA, "README.md"),
+            cache / "README.md",
+            len(data),
+            hashlib.sha256(data).hexdigest(),
+            root=cache,
+        )
+    assert _unchanged(out) and _no_temp_files(cache)
+
+
+def test_symlinked_directory_inside_cache_is_refused(hub, tmp_path):
+    import os
+
+    c = client(hub)
+    cache = tmp_path / "cache"
+    cache.mkdir()
+    out = _outside_target(tmp_path)
+    os.symlink(out.parent, cache / "daily_aligned")  # escape through a directory link
+    data = hub.files["daily_aligned/2025-10-08.parquet"]
+    with pytest.raises(HubError, match="symlink"):
+        c.download(
+            c.file_url(REPO, SHA, "daily_aligned/2025-10-08.parquet"),
+            cache / "daily_aligned" / "2025-10-08.parquet",
+            len(data),
+            hashlib.sha256(data).hexdigest(),
+            root=cache,
+        )
+    assert sorted(p.name for p in out.parent.iterdir()) == ["victim.bin"] and _unchanged(out)
+
+
+def test_destination_outside_root_is_refused(hub, tmp_path):
+    c = client(hub)
+    data = hub.files["README.md"]
+    with pytest.raises(HubError, match="outside the cache"):
+        c.download(
+            c.file_url(REPO, SHA, "README.md"),
+            tmp_path / "elsewhere" / "README.md",
+            len(data),
+            hashlib.sha256(data).hexdigest(),
+            root=tmp_path / "cache",
+        )
 
 
 def test_retry_on_503(fake_hub_factory):
