@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 
 import pyarrow as pa
 import pyarrow.parquet as pq
@@ -354,6 +355,77 @@ def test_ctf_resolution_table_designation(env, capsys):
         schema.main(["schema", "--source", "remote", "--ctf-resolution-table", "CTF/nope"])
 
 
+HOLDOUT_ROWS, PRE_ROWS = 7919, 6007  # distinctive, so any leak is detectable
+
+
+def _ints(x):
+    if isinstance(x, bool):
+        return
+    if isinstance(x, int):
+        yield x
+    elif isinstance(x, dict):
+        for v in x.values():
+            yield from _ints(v)
+    elif isinstance(x, list):
+        for v in x:
+            yield from _ints(v)
+
+
+def _keys(x):
+    if isinstance(x, dict):
+        for k, v in x.items():
+            yield k
+            yield from _keys(v)
+    elif isinstance(x, list):
+        for v in x:
+            yield from _keys(v)
+
+
+def test_schema_report_is_holdout_blind(env, capsys):
+    """ADR-0025: holdout schemas are inspected (structure and drift are reported)
+    but no row count, row-group count, byte volume or column statistic is."""
+    big_hold = daily(
+        [(B + 40 * DAY + i, f"h{i}", "HOLDOUT-SECRET") for i in range(HOLDOUT_ROWS)],
+        extra_cols={"holdout_only_col": pa.array([0] * HOLDOUT_ROWS, pa.int8())},
+    )
+    big_pre = daily([(EXPLORATION_START + 59 * DAY + i, f"p{i}", "Pre") for i in range(PRE_ROWS)])
+
+    def regroup(b: bytes) -> bytes:  # several row groups per file
+        return pq_bytes(pq.read_table(pa.BufferReader(b)), 1000)
+
+    extra = {
+        "daily_aligned/2025-11-17.parquet": regroup(big_hold),
+        "daily_aligned/2025-03-01.parquet": regroup(big_pre),
+    }
+    hub, fetch, schema = env(extra=extra)
+    fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"])
+    capsys.readouterr()
+    assert schema.main(["schema", "--source", "remote", *CONFIRM]) == 3  # drift blocks
+    out = capsys.readouterr().out
+    rep = json.loads(schema.REPORT_JSON.read_text())
+    md = schema.REPORT_MD.read_text()
+    d = rep["daily_aligned"]
+    # Holdout schemas were inspected: every required file, holdout drift detected.
+    assert d["footers_read"] == d["files"] == 6 and d["missing"] == 0
+    variants = d["schema_variants"]
+    assert len(variants) == 2
+    drifted = [v for v in variants if any(c[0] == "holdout_only_col" for c in v["columns"])]
+    assert len(drifted) == 1 and drifted[0]["first_day"] == "2025-11-17"
+    assert any("drift" in b["role"] for b in rep["blockers"])
+    assert "holdout_only_col" in md
+    # ... but no data volume: no row/row-group/byte keys, no large integers anywhere,
+    # and none of the distinctive counts (or their sums) in any output.
+    assert not [k for k in _keys(rep) if any(w in k.lower() for w in ("row", "bytes", "num_"))]
+    assert max(_ints(rep)) < 100
+    total = HOLDOUT_ROWS + PRE_ROWS + 9  # + the 9 rows of the other required files
+    for n in (HOLDOUT_ROWS, PRE_ROWS, HOLDOUT_ROWS + 1, HOLDOUT_ROWS + 3, total, total - 1):
+        for text in (out, md, json.dumps(rep)):
+            assert str(n) not in text and f"{n:,}" not in text
+    for text in (out, md):
+        assert not re.search(r"\d[\d,]*\s+rows?\b|\brows?(\s+groups?)?\W{0,3}\d", text, re.I)
+        assert "bytes fetched" not in text.lower()
+
+
 def test_missing_required_role_is_a_blocker(env, capsys):
     hub, fetch, schema = env(drop=("p_event",))
     fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"])
@@ -379,8 +451,9 @@ def test_domain_checks_use_exploration_rows_only(env, capsys):
     assert schema.main(["schema", "--source", "remote", "--domain-checks", *CONFIRM]) == 0
     dc = json.loads(schema.REPORT_JSON.read_text())["domain_checks"]
     # pre-holdout files: 1 trailing + 3 + 1 exploration + 1 embargo row; 2 holdout rows.
-    # Only the 4 exploration-period rows are checked.
-    assert dc["rows_checked"] == 4 and dc["rows_excluded_holdout_side"] == 2
+    # Only the 4 exploration-period rows are checked; holdout rows are not even
+    # counted (ADR-0025).
+    assert dc["rows_checked"] == 4 and "rows_excluded_holdout_side" not in dc
     assert dc["rows_excluded_outside_exploration_period"] == 2
     assert dc["violations"]["D_not_plus_or_minus_one"] == 0
     assert dc["violations"]["p_event_outside_open_unit_interval"] == 0
@@ -391,7 +464,6 @@ def test_domain_checks_use_exploration_rows_only(env, capsys):
     assert set(dc) == {
         "files_read",
         "rows_checked",
-        "rows_excluded_holdout_side",
         "rows_excluded_outside_exploration_period",
         "rows_null_timestamp",
         "nulls",

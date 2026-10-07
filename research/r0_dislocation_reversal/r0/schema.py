@@ -1,7 +1,8 @@
 """Stage C: schema inspection and role mapping (metadata only by default).
 
-Footer reads return only column names/types, row counts and timestamp
-statistics. The optional domain checks (ADR-0022) read row values only through
+Reports carry schema structure (column names/types) and file-placement
+timestamps only: no row counts or other data-volume statistics (ADR-0025). The
+optional domain checks (ADR-0022) read row values only through
 ``r0.rawread.read_rows`` (PRE_HOLDOUT scope) and then keep exploration-period
 rows only.
 """
@@ -470,7 +471,6 @@ MAX_CODES = 20
 class DomainSummary:
     files_read: int = 0
     rows_checked: int = 0  # exploration-period rows
-    rows_excluded_holdout_side: int = 0  # never returned by the reader
     rows_excluded_outside_exploration_period: int = 0  # trailing 2024 and embargo rows
     rows_null_timestamp: int = 0
     nulls: dict[str, int] = field(default_factory=dict)

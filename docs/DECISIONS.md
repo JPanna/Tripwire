@@ -625,3 +625,22 @@ Template:
 - Consequences: existing manifests must be re-listed with the current
   tooling. No Stage D work.
 
+
+## ADR-0025 — Holdout blindness of Stage C schema reports
+
+- Date: 2026-10-07
+- Status: Accepted
+- Origin: owner (after the agent found that `01_schema.py schema` reported
+  `rows_total` over all required files, holdout files included)
+- Decision: holdout schema *structure* (column names, types, variants, drift
+  dates, duplicate names, number of files inspected) may be inspected and
+  reported. Holdout *data-volume or column-statistic* information may not,
+  unless separately approved. The schema report therefore carries no row
+  counts (total, per file, or pre-holdout-side), no row-group counts, no
+  footer byte volume and no column statistics other than the block-timestamp
+  placement already authorized for the manifest. The domain-check output no
+  longer reports `rows_excluded_holdout_side`. Row counts are omitted from
+  schema inspection entirely, as they are not needed for role verification.
+- Consequences: a regression test (`test_schema_report_is_holdout_blind`)
+  inspects holdout schemas and asserts that no row count or equivalent
+  volume statistic appears in the JSON, Markdown or printed report.

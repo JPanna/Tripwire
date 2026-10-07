@@ -75,6 +75,11 @@ rows are kept. `CTF/` rows follow the same rule.
    row counts, and the timestamp column's min/max statistics. It is allowed
    for every file, because placement and schema checks need it. It exposes no
    other column statistic and no row value.
+   **Holdout blindness (ADR-0025):** the Stage C schema report (file and
+   stdout) carries schema structure and file-placement timestamps only. Row
+   counts, row-group counts, footer byte volumes and other column statistics
+   are never reported, for holdout files or any other file; the manifest
+   holds no footer value except the placement timestamps.
 6. **K0** (Stage D) will get its own validation-only path and flag (ADR-0020).
    It will not reuse the research `--holdout` flag.
 
