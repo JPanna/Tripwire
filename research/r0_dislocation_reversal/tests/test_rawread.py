@@ -253,3 +253,29 @@ def test_duplicate_field_names_are_never_resolved_silently(data_root):
     assert info.ts_column is None and info.ts_min is None  # no statistics from an ambiguous column
     with pytest.raises(ValueError, match="duplicate field names"):
         read_rows(p, ["x"], ts_column="block_timestamp", scope=Scope.PRE_HOLDOUT)
+
+
+# --- ADR-0026: no CTF row access before the A2 scoped loader exists ------------
+
+
+def test_ctf_resolution_rows_are_not_readable(data_root):
+    """CTF/resolutions has no timestamp column, so the only row reader refuses it
+    in every scope: no CTF row access exists until the A2 loader is accepted."""
+    t = pa.table(
+        {
+            "id": ["137_1_1", "137_99999999_2"],
+            "condition_id": ["c1", "HOLDOUT-SECRET"],
+            "outcome_slot_count": pa.array([2, 2], pa.int64()),
+            "payout_numerators": pa.array([["1", "0"], ["0", "1"]], pa.list_(pa.string())),
+        }
+    )
+    p = write_parquet(raw_cache_dir("o/n", "a" * 40) / "CTF" / "resolutions.parquet", t)
+    cols = ["condition_id", "payout_numerators"]
+    with pytest.raises(KeyError):
+        read_rows(p, cols, ts_column="block_timestamp", scope=Scope.PRE_HOLDOUT)
+    with pytest.raises(TypeError):  # the record id is not a timestamp
+        read_rows(p, cols, ts_column="id", scope=Scope.PRE_HOLDOUT)
+    with pytest.raises(HoldoutAccessError):
+        read_rows(p, cols, ts_column="id", scope=Scope.HOLDOUT)
+    info = read_footer(p, ("block_timestamp", "timestamp", "block_time"))
+    assert info.ts_column is None and info.ts_min is None  # schema only

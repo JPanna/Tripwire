@@ -4,7 +4,11 @@ Matching policy (no silent substitution):
 
 - A role is FOUND only when a column carries *exactly* the name the frozen
   preregistration itself uses for it (e.g. ``p_event``, ``D``,
-  ``block_timestamp``), with a compatible type.
+  ``block_timestamp``), with a compatible type. For the CTF resolution table,
+  whose columns the preregistration does not name, the exact names are those
+  documented by the pinned dataset card and cited in the proposed amendment A2
+  (ADR-0026): FOUND then means "documented column present", never a confirmed
+  semantic mapping (the outcome_seq <-> payout-slot mapping stays a K0 check).
 - Any other plausible column is reported as a CANDIDATE. A candidate is used
   only after the owner confirms it (``01_schema.py --confirm role=column``),
   and the confirmation is recorded in the report.
@@ -191,23 +195,36 @@ CTF_RESOLUTION_ROLES: tuple[Role, ...] = (
         ("string", "binary"),
         "§5.3 the condition's resolution event",
     ),
+    # CTF/ has no timestamp column (dataset card): t_res is not read from any
+    # column. Proposed A2 derives it from the block number in `id` through the
+    # scoped loader (not built). There is deliberately no fallback to metadata
+    # such as daily_aligned `resolved_at` or `winning_outcome_label` (§5.3).
     Role(
-        "ctf_resolution_ts",
+        "ctf_record_id",
         REQUIRED,
-        ("block_timestamp",),
-        r"time|ts$",
-        ("int", "timestamp"),
-        "§5.3 t_res = block timestamp of the resolution event",
+        ("id",),
+        r"record_?id|event_?id",
+        ("string",),
+        "A2 (proposed): documented record id chainId_blockNumber_logIndex, the source of "
+        "the block number for t_res; not a timestamp column",
     ),
     Role(
         "ctf_payouts",
         REQUIRED,
-        (),
+        ("payout_numerators",),
         r"payout|numerator",
         ("list", "string", "int", "decimal"),
-        "§5.3 v(m) = payout numerator / sum of numerators",
+        "§5.3 v(m) = payout numerator / sum of numerators (documented column; the "
+        "outcome_seq <-> slot mapping is not confirmed here: K0)",
     ),
-    Role("ctf_slot_count", OPTIONAL, (), r"slot", ("int",), "§5.3 outcome-slot mapping support"),
+    Role(
+        "ctf_slot_count",
+        REQUIRED,
+        ("outcome_slot_count",),
+        r"slot",
+        ("int",),
+        "A2 (proposed): payout-vector length check; outcome-slot mapping support (K0)",
+    ),
     Role(
         "ctf_event_type",
         OPTIONAL,
@@ -241,8 +258,9 @@ AMENDMENT_HINTS: dict[str, str] = {
     "maker": "Amend §7 matching keys.",
     "taker": "Amend §7 matching keys.",
     "ctf_condition_id": "None within the frozen spec: t_res and v(m) need the condition id.",
-    "ctf_resolution_ts": "Join the resolution block number to block headers (chain data): "
-    "amendment, because §2.2 forbids chain data as an analysis variable.",
+    "ctf_record_id": "None: without the documented record id the resolution block, and so "
+    "t_res under the proposed A2, cannot be determined (SPEC IMPLEMENTATION BLOCKER).",
+    "ctf_slot_count": "Owner decision: payout-vector validation under A2 needs the slot count.",
     "ctf_payouts": "v(m) cannot be computed from CTF/: amendment needed (e.g. on-chain "
     "payoutNumerators, which §2.2 forbids as an analysis variable).",
 }

@@ -19,8 +19,6 @@ CONFIRM = [
     "--confirm",
     "token_id=asset_id",
     "--confirm",
-    "ctf_payouts=payout_numerators",
-    "--confirm",
     "shares=token_amount",
 ]
 
@@ -73,14 +71,28 @@ def daily(
     return pq_bytes(t, rg=2)
 
 
-def ctf_res() -> bytes:
+def ctf_res(extra: dict | None = None) -> bytes:
+    """The real CTF/resolutions.parquet schema: no timestamp column (dataset card)."""
+    cols = {
+        "id": ["137_66000000_1", "137_77000000_2"],
+        "condition_id": ["c1", "HOLDOUT-SECRET-c2"],
+        "oracle": ["0xo", "0xo"],
+        "question_id": ["q1", "q2"],
+        "outcome_slot_count": pa.array([2, 2], pa.int64()),
+        "payout_numerators": pa.array([["1", "0"], ["0", "1"]], pa.list_(pa.string())),
+    }
+    return pq_bytes(pa.table({**cols, **(extra or {})}))
+
+
+def ctf_prep() -> bytes:
     return pq_bytes(
         pa.table(
             {
-                "condition_id": ["c1", "c2"],
-                "block_timestamp": pa.array([EXPLORATION_START + 5, B + 5], pa.int64()),
-                "payout_numerators": [[1, 0], [0, 1]],
-                "outcome_slot_count": pa.array([2, 2], pa.int32()),
+                "id": ["137_1_1"],
+                "condition_id": ["c1"],
+                "oracle": ["0xo"],
+                "question_id": ["q1"],
+                "outcome_slot_count": pa.array([2], pa.int64()),
             }
         )
     )
@@ -91,6 +103,7 @@ def files(**daily_kw) -> dict[str, bytes]:
         "README.md": b"# card",
         "OrderFilled/2025-01-01.parquet": b"o" * 500,
         "CTF/resolutions/2025.parquet": ctf_res(),
+        "CTF/preparations.parquet": ctf_prep(),
         "CTF/splits/2025.parquet": pq_bytes(pa.table({"condition_id": ["c1"], "amount": [1]})),
         "daily_aligned/2024-12-29.parquet": daily(
             [(TRAILING_START - DAY, "cOLD", "Old")], **daily_kw
@@ -284,13 +297,26 @@ def _prepare_local(env, **kw):
         ]
     )
     lst = json.loads(fetch.MANIFEST_JSON.read_text())
-    for part, needs in (
-        ("pre-holdout", {"required-pre-holdout", "required-both"}),
-        ("ctf", {"required-ctf-resolution"}),
-    ):
-        total = sum(f["size"] for f in lst["files"] if f["need"] in needs)
-        fetch.main(["--download", part, "--approve-bytes", str(total)])
+    needs = {"required-pre-holdout", "required-both"}
+    total = sum(f["size"] for f in lst["files"] if f["need"] in needs)
+    fetch.main(["--download", "pre-holdout", "--approve-bytes", str(total)])
+    _stage_ctf_locally(hub, fetch)
     return hub, fetch, schema
+
+
+def _stage_ctf_locally(hub, fetch):
+    """Place the CTF resolution files in the raw cache exactly as upstream serves
+    them (integrity-checked against the manifest by every consumer). This stands
+    in for a future accepted A2 acquisition: `--download ctf` is disabled
+    (ADR-0026), and Stage C only ever reads CTF footers."""
+    from r0.paths import raw_file
+
+    lst = fetch.Listing.from_json(fetch.MANIFEST_JSON.read_text())
+    for f in fetch.part_files(lst.files, "ctf"):
+        dest = raw_file(lst.repo_id, lst.revision_sha, f.path)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(hub.files[f.path])
+        dest.chmod(0o444)
 
 
 def test_schema_remote_blocks_on_unconfirmed_token_id(env, capsys):
@@ -308,7 +334,7 @@ def test_schema_remote_blocks_on_unconfirmed_token_id(env, capsys):
     # token_amount is not the spec's daily_aligned name: an undecided share column blocks,
     # even though usdc_amount and price exist (no silent fallback, §3).
     assert roles["shares"]["status"] == "CANDIDATES"
-    assert [b["role"] for b in rep["blockers"]] == ["token_id", "shares", "ctf_payouts"]
+    assert [b["role"] for b in rep["blockers"]] == ["token_id", "shares"]
     ctf = rep["ctf"]["CTF/resolutions"]
     assert ctf["is_resolution_table"] and not rep["ctf"]["CTF/splits"]["is_resolution_table"]
 
@@ -318,14 +344,10 @@ def test_schema_confirmations_clear_blockers(env, capsys):
     fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"])
     assert schema.main(["schema", "--source", "remote", *CONFIRM]) == 0
     rep = json.loads(schema.REPORT_JSON.read_text())
-    assert rep["confirmations"] == {
-        "token_id": "asset_id",
-        "ctf_payouts": "payout_numerators",
-        "shares": "token_amount",
-    }
+    assert rep["confirmations"] == {"token_id": "asset_id", "shares": "token_amount"}
     assert "None found by the schema check." in schema.REPORT_MD.read_text()
     # Owner states there is no share column: the usdc_amount / price fallback applies.
-    conf = [*CONFIRM[:4], "--confirm", "shares=NONE"]
+    conf = [*CONFIRM[:2], "--confirm", "shares=NONE"]
     assert schema.main(["schema", "--source", "remote", *conf]) == 0
     roles = {
         r["key"]: r for r in json.loads(schema.REPORT_JSON.read_text())["daily_aligned"]["roles"]
@@ -336,7 +358,7 @@ def test_schema_confirmations_clear_blockers(env, capsys):
 def test_shares_fallback_blocked_without_usdc_or_price(env, capsys):
     hub, fetch, schema = env(drop=("price",))
     fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"])
-    conf = [*CONFIRM[:4], "--confirm", "shares=NONE"]
+    conf = [*CONFIRM[:2], "--confirm", "shares=NONE"]
     assert schema.main(["schema", "--source", "remote", *conf]) == 3
     assert [b["role"] for b in json.loads(schema.REPORT_JSON.read_text())["blockers"]] == ["shares"]
 
@@ -531,9 +553,10 @@ def _prepare_all_local(env, **kw):
     hub, fetch, schema = env(**kw)
     fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"])
     files = fetch.Listing.from_json(fetch.MANIFEST_JSON.read_text()).files
-    for part in ("pre-holdout", "holdout", "ctf"):
+    for part in ("pre-holdout", "holdout"):
         total = sum(f.size for f in fetch.part_files(files, part))
         assert fetch.main(["--download", part, "--approve-bytes", str(total)]) == 0
+    _stage_ctf_locally(hub, fetch)
     return hub, fetch, schema
 
 
@@ -621,16 +644,8 @@ def test_drift_in_final_daily_file_blocks(env, capsys):
 
 def test_ctf_resolution_drift_after_file_50_blocks(env, capsys):
     extra = {f"CTF/resolutions/part-{i:03d}.parquet": ctf_res() for i in range(55)}
-    t = pa.table(
-        {
-            "condition_id": ["c9"],
-            "block_timestamp": pa.array([B + 9], pa.int64()),
-            "payout_numerators": [[1, 0]],
-            "outcome_slot_count": pa.array([2], pa.int32()),
-            "late_extra": [1],
-        }
-    )
-    extra["CTF/resolutions/part-055.parquet"] = pq_bytes(t)  # 57th file in path order
+    late = ctf_res(extra={"late_extra": [1, 2]})
+    extra["CTF/resolutions/part-055.parquet"] = late  # 57th file in path order
     hub, fetch, schema = env(extra=extra)
     fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"])
     assert schema.main(["schema", "--source", "remote", *CONFIRM]) == 3
@@ -708,7 +723,7 @@ def test_relisting_replaces_the_legacy_manifest_with_an_accepted_one(env, capsys
     )
     lst = json.loads(fetch.MANIFEST_JSON.read_text())
     by = {f["path"]: f for f in lst["files"]}
-    assert lst["manifest_version"] == 2
+    assert lst["manifest_version"] == 3
     old = by["daily_aligned/2023-01-01.parquet"]  # probed despite its name
     assert (old["need"], old["date_source"], old["placement_verified"]) == (
         "required-pre-holdout",
@@ -719,9 +734,10 @@ def test_relisting_replaces_the_legacy_manifest_with_an_accepted_one(env, capsys
     assert (mixed["side"], mixed["need"]) == ("straddle", "required-both")
     # accepted by every consumer
     files = fetch.Listing.from_json(fetch.MANIFEST_JSON.read_text()).files
-    for part in ("pre-holdout", "holdout", "ctf"):
+    for part in ("pre-holdout", "holdout"):
         total = sum(f.size for f in fetch.part_files(files, part))
         assert fetch.main(["--download", part, "--approve-bytes", str(total)]) == 0
+    _stage_ctf_locally(hub, fetch)
     assert fetch.main(["--verify", "--part", "pre-holdout"]) == 0
     assert schema.main(["schema", "--source", "local", "--domain-checks", *CONFIRM]) == 0
     assert "skipped" not in json.loads(schema.REPORT_JSON.read_text())["domain_checks"]
@@ -729,3 +745,97 @@ def test_relisting_replaces_the_legacy_manifest_with_an_accepted_one(env, capsys
     v = json.loads((data_root / "exploration/inspection/s_short_vocab.json").read_text())
     assert "HOLDOUT-SECRET" not in json.dumps(v)
     assert any(e["market_id"] == "cX" for e in v["examples_random"])  # rows now reachable
+
+
+# --- ADR-0026: CTF lifecycle files in the manifest ----------------------------
+
+
+def test_ctf_without_timestamp_does_not_block_manifest(env, capsys):
+    hub, fetch, _ = env()
+    assert (
+        fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"]) == 0
+    )
+    lst = json.loads(fetch.MANIFEST_JSON.read_text())
+    by = {f["path"]: f for f in lst["files"]}
+    res = by["CTF/resolutions/2025.parquet"]
+    assert (res["need"], res["side"], res["scope_authority"]) == (
+        "required-ctf-resolution",
+        "all-dates",
+        "pending-A2-ctf-loader",
+    )
+    # never labelled as temporally placed or verified
+    for k in ("placement_verified", "ts_min", "ts_max", "date_source", "first_day", "last_day"):
+        assert res[k] is None, k
+    assert by["CTF/preparations.parquet"]["need"] == "not-needed"
+    # daily placement still comes from footers, file by file
+    assert lst["footers_probed"] is True and lst["manifest_version"] == 3
+    daily_entries = [f for f in lst["files"] if f["path"].startswith("daily_aligned/")]
+    assert daily_entries and all(
+        f["placement_verified"] is True
+        and f["date_source"] == "footer"
+        and f["scope_authority"] == "footer-block_timestamp"
+        for f in daily_entries
+    )
+    # CTF files were not footer-probed (no request touched them)
+    assert not [p for p, _ in hub.log if "/resolve/" in p and "/CTF/" in p]
+    md = fetch.MANIFEST_MD.read_text()
+    assert "pending-A2-ctf-loader" in md and "NOT verified" in md
+
+
+def test_ctf_download_stays_disabled(env, capsys, data_root):
+    hub, fetch, _ = env()
+    fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"])
+    files = fetch.Listing.from_json(fetch.MANIFEST_JSON.read_text()).files
+    exact = sum(f.size for f in fetch.part_files(files, "ctf"))
+    n = len(hub.log)
+    for approve in (exact, 0, -1):
+        with pytest.raises(SystemExit, match="CTF downloads are disabled"):
+            fetch.main(["--download", "ctf", "--approve-bytes", str(approve)])
+    assert len(hub.log) == n  # refused before any request
+    assert not (data_root / "raw").exists()
+    with pytest.raises(SystemExit):  # the old preparations part no longer exists
+        fetch.main(["--download", "ctf-mapping", "--approve-bytes", "0"])
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"placement_verified": True, "ts_min": B - 10, "ts_max": B - 5, "date_source": "footer"},
+        {"side": "pre_holdout"},
+        {"scope_authority": "footer-block_timestamp"},
+    ],
+    ids=["verified-placement", "side", "scope"],
+)
+def test_hand_edited_ctf_placement_is_refused_by_consumers(env, capsys, change):
+    hub, fetch, schema = env()
+    fetch.main(["--list", "--repo", REPO, "--endpoint", hub.endpoint, "--write-manifest"])
+    _set_manifest(fetch, "CTF/resolutions/2025.parquet", **change)
+    n = len(hub.log)
+    with pytest.raises(SystemExit, match="CTF entry"):
+        fetch.main(["--download", "pre-holdout", "--approve-bytes", "0"])
+    with pytest.raises(SystemExit, match="CTF entry"):
+        schema.main(["schema", "--source", "remote", *CONFIRM])
+    assert len(hub.log) == n
+
+
+def test_research_row_reads_never_touch_ctf(env, capsys, monkeypatch):
+    """Vocab and domain checks read rows only from daily_aligned files, even with
+    the CTF resolution file present in the raw cache."""
+    _, _, schema = _prepare_local(env)
+    import r0.vocab as vocab
+
+    seen: list[str] = []
+
+    def spy(real):
+        def f(src, columns, **kw):
+            seen.append(str(src))
+            return real(src, columns, **kw)
+
+        return f
+
+    monkeypatch.setattr(vocab, "read_rows", spy(vocab.read_rows))
+    monkeypatch.setattr(schema, "read_rows", spy(schema.read_rows))
+    conf = [*CONFIRM, "--confirm", "scheduled_end=end_date_iso"]
+    assert schema.main(["schema", "--source", "remote", "--domain-checks", *conf]) == 0
+    schema.main(["vocab", "--source", "local"])
+    assert seen and all("/daily_aligned/" in p for p in seen)

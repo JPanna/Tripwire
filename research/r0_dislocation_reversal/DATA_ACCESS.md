@@ -2,8 +2,10 @@
 
 Governing decisions: ADR-0019 (tooling), ADR-0020 (owner rulings), ADR-0021
 (this design), ADR-0022 (owner clarifications: PRE-HOLDOUT vs EXPLORATION;
-domain checks) and ADR-0023 (hardening after the independent audit). The
-frozen preregistration is not changed by anything here.
+domain checks), ADR-0023 (hardening after the independent audit), ADR-0025
+(holdout-blind schema reports) and ADR-0026 (proposed A2: CTF scope authority;
+CTF downloads disabled). The frozen preregistration is not changed by anything
+here.
 
 ## 1. Two notions of "before the holdout"
 
@@ -44,7 +46,13 @@ data/
 A row is **holdout-side** iff `block_timestamp >= 1759881600`. Everything
 earlier is **pre-holdout**. The rule is applied to **rows**, not files: a
 file that straddles the boundary is split mechanically and its pre-holdout
-rows are kept. `CTF/` rows follow the same rule.
+rows are kept. `CTF/` rows follow the same rule, but `CTF/` tables have no
+timestamp column (dataset card, pinned revision). Under the proposed amendment
+A2 (ADR-0026) a CTF resolution row's scope comes from the block number in its
+`id` compared with the first Polygon block at or after the boundary (`B*`),
+through a dedicated scoped loader that does not exist yet. Until that loader
+and its tests are accepted there is **no CTF row access** and CTF downloads
+are disabled.
 
 ## 4. How the guard works
 
@@ -99,7 +107,9 @@ uv run python research/r0_dislocation_reversal/scripts/00_fetch.py --list
 # placement comes only from complete footer timestamp statistics, never from
 # file names. Refuses (no override) if any candidate's placement is unresolved,
 # or if the manifest already pins another revision (--replace-manifest re-pins
-# on purpose).
+# on purpose). CTF/ files are not footer-probed: they are recorded as all-date
+# lifecycle files (side "all-dates"); the resolution table's scope authority is
+# "pending-A2-ctf-loader", never "verified". Preparations are not needed.
 uv run python research/r0_dislocation_reversal/scripts/00_fetch.py --list --write-manifest
 
 # Stage C: schema and role mapping from footers (no download needed). Every
@@ -117,8 +127,7 @@ uv run python research/r0_dislocation_reversal/scripts/01_schema.py schema
 # Only after you approve the size printed by --list:
 uv run python research/r0_dislocation_reversal/scripts/00_fetch.py \
     --download pre-holdout --approve-bytes <exact bytes from the listing>
-uv run python research/r0_dislocation_reversal/scripts/00_fetch.py \
-    --download ctf --approve-bytes <exact bytes>
+# (--download ctf is DISABLED until the A2 scoped CTF loader is accepted, ADR-0026)
 uv run python research/r0_dislocation_reversal/scripts/00_fetch.py --verify --part pre-holdout
 
 # Stage C: S_short vocabulary (EXPLORATION-period markets; category, tags, question, slug only)
@@ -171,9 +180,11 @@ rejected (never parsed, no fallback to a later key).
 **Manifest placement authority.** Every consumer (download, `--verify`,
 schema, vocab, domain checks) loads the manifest through one function,
 `r0.manifest.load_authoritative_manifest`. It refuses the manifest unless it
-has `manifest_version` 2 and every `daily_aligned` Parquet entry (including
+has `manifest_version` 3 and every `daily_aligned` Parquet entry (including
 `not-needed` ones) carries footer placement evidence whose implied side/need
-equals the serialized values. Legacy manifests must be re-listed.
+equals the serialized values, and every `CTF/` Parquet entry claims no
+temporal placement (no footer timestamps, no verified flag, side `all-dates`,
+resolution scope `pending-A2-ctf-loader`). Older manifests must be re-listed.
 
 ## 6. Files written
 

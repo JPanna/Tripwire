@@ -119,7 +119,8 @@ def test_mixed_case_extension_is_parquet(path):
         ("OrderFilled/2025-01-01.parquet", "not-needed"),
         ("CTF/resolutions/2023-01-01.parquet", "required-ctf-resolution"),
         ("CTF/resolutions.parquet", "required-ctf-resolution"),
-        ("CTF/conditionPreparations/2025-01.parquet", "optional-ctf-mapping"),
+        ("CTF/conditionPreparations/2025-01.parquet", "not-needed"),
+        ("CTF/preparations.parquet", "not-needed"),
         ("CTF/splits/2025-01-01.parquet", "not-needed"),
         ("CTF/weird/2025-01-01.parquet", "unknown"),
         ("README.md", "required-card"),
@@ -183,7 +184,8 @@ def test_side_of_exact_boundary():
 
 def test_ctf_placement_does_not_change_need():
     g = e("CTF/resolutions/2025-12-01.parquet", placement_verified=False)
-    assert g.need == "required-ctf-resolution" and g.side == "unverified"
+    assert g.need == "required-ctf-resolution" and g.side == "all-dates"
+    assert g.scope_authority == "pending-A2-ctf-loader" and g.date_source is None
 
 
 @pytest.mark.parametrize("bad", ["../x.parquet", "/abs.parquet", "a/../../b"])
@@ -365,3 +367,56 @@ def test_coarse_flags_are_not_enough():
     assert lst.footers_probed is True
     with pytest.raises(ManifestError):
         require_authoritative_placement(lst)
+
+
+# --- ADR-0026: CTF entries never carry temporal placement ----------------------
+
+
+def ctf_entry(**kw) -> FileEntry:
+    return e("CTF/resolutions.parquet", 20, **kw)
+
+
+def test_ctf_entry_is_all_dates_with_pending_scope():
+    f = ctf_entry()
+    assert (f.need, f.side, f.scope_authority) == (
+        "required-ctf-resolution",
+        "all-dates",
+        "pending-A2-ctf-loader",
+    )
+    assert f.placement_verified is None and f.ts_min is None and f.date_source is None
+    assert e("CTF/preparations.parquet").need == "not-needed"
+    assert e("daily_aligned/2025-01-01.parquet").scope_authority == "footer-block_timestamp"
+    require_authoritative_placement(current_listing([*good_files(), f]))  # accepted
+
+
+@pytest.mark.parametrize(
+    "change",
+    [
+        {"placement_verified": True},
+        {"placement_verified": False},
+        {"ts_min": B - 10, "ts_max": B - 5},
+        {"date_source": "footer"},
+        {"first_day": "2025-01-01", "last_day": "2025-01-02"},
+        {"side": "pre_holdout"},
+        {"scope_authority": "footer-block_timestamp"},
+        {"scope_authority": None},
+        {"need": "not-needed"},
+    ],
+)
+def test_ctf_entry_claiming_placement_or_scope_is_refused(change):
+    bad = _replace(ctf_entry(), **change)
+    with pytest.raises(ManifestError, match="CTF entry"):
+        require_authoritative_placement(current_listing([*good_files(), bad]))
+
+
+def test_previous_manifest_version_is_refused():
+    with pytest.raises(ManifestError, match=LEGACY_MESSAGE):
+        require_authoritative_placement(
+            _replace(current_listing(good_files()), manifest_version=MANIFEST_VERSION - 1)
+        )
+
+
+def test_ctf_part_is_disabled():
+    from r0.manifest import DISABLED_PARTS, PARTS
+
+    assert "ctf" in DISABLED_PARTS and "ctf-mapping" not in PARTS

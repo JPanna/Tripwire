@@ -7,8 +7,11 @@
 
 ``--list`` downloads no research files. ``--probe-footers`` reads only Parquet
 footers through HTTP byte ranges (schema and timestamp statistics; no row
-values). ``--download`` requires a written manifest and the exact byte total
-of the part, so a bulk download cannot start by accident.
+values). Only ``daily_aligned`` files are footer-probed: ``CTF/`` tables have no
+timestamp column and are all-date files whose row scope is PENDING the A2 loader
+(ADR-0026). ``--download`` requires a written manifest and the exact byte total
+of the part, so a bulk download cannot start by accident; the ``ctf`` part is
+disabled until the A2 scoped loader is accepted.
 """
 
 from __future__ import annotations
@@ -25,7 +28,7 @@ import _bootstrap  # noqa: F401
 from r0.hub import DATASET_REPO, DEFAULT_ENDPOINT, HubClient, RemoteFile
 from r0.integrity import IntegrityError, verify_file
 from r0.manifest import (
-    LAYER_CTF,
+    DISABLED_PARTS,
     LAYER_DAILY,
     MANIFEST_VERSION,
     PARTS,
@@ -80,14 +83,10 @@ def _probe(client: HubClient, repo: str, sha: str, f: FileEntry) -> tuple[FileEn
 
 
 def probe_targets(files: list[FileEntry]) -> list[int]:
-    """Every daily_aligned Parquet file (whatever its name) and every CTF Parquet
-    file of a table that is not excluded by name. File names never decide."""
-    return [
-        i
-        for i, f in enumerate(files)
-        if is_parquet(f.path)
-        and (f.layer == LAYER_DAILY or (f.layer == LAYER_CTF and f.need != "not-needed"))
-    ]
+    """Every daily_aligned Parquet file, whatever its name (file names never
+    decide placement). CTF tables are not placement-probed: they have no
+    timestamp column and their row scope authority is the A2 loader (ADR-0026)."""
+    return [i for i, f in enumerate(files) if is_parquet(f.path) and f.layer == LAYER_DAILY]
 
 
 def _carry_local_hashes(new: list[FileEntry], old: Listing) -> None:
@@ -182,6 +181,8 @@ def _load_manifest() -> Listing:
 
 
 def cmd_download(a: argparse.Namespace) -> int:
+    if a.download in DISABLED_PARTS:
+        sys.exit(f"refusing: {DISABLED_PARTS[a.download]}")
     listing = _load_manifest()
     sel = part_files(listing.files, a.download)
     total = sum(f.size for f in sel)

@@ -11,6 +11,12 @@ needed at all) comes only from its footer timestamp statistics. Until a file
 has been probed successfully its need is ``unresolved``, and an unresolved
 file blocks the manifest and any download. ``.parquet`` is matched
 case-insensitively everywhere (``is_parquet``).
+
+``CTF/`` files are all-date lifecycle tables without a timestamp column (dataset
+card at the pinned revision). They are never placed by footer statistics: their
+side is ``all-dates``, and the row-level scope authority of the resolution table
+is PENDING the A2 scoped loader (ADR-0026, proposed). Until that loader and its
+tests are accepted, CTF downloads are disabled (``DISABLED_PARTS``).
 """
 
 from __future__ import annotations
@@ -37,8 +43,13 @@ LAYER_CTF = "CTF"
 # CTF sub-table keywords (path, case-insensitive). The CTF layer is described
 # as preparations, splits, merges, resolutions and redemptions [EXCERPT].
 CTF_NEEDED = ("resolution",)
-CTF_MAPPING = ("prepar",)
-CTF_NOT_NEEDED = ("split", "merge", "redemption", "redeem", "transfer")
+# Preparations are not required for R0 (ADR-0026) unless K0 shows a concrete need.
+CTF_NOT_NEEDED = ("prepar", "split", "merge", "redemption", "redeem", "transfer")
+
+# Scope authority recorded per file (ADR-0026).
+SCOPE_FOOTER = "footer-block_timestamp"  # daily_aligned: footer timestamp statistics
+SCOPE_CTF_PENDING = "pending-A2-ctf-loader"  # CTF resolutions: id -> block -> B* (not built)
+SIDE_ALL_DATES = "all-dates"  # a CTF table: rows of every date, never placed by footers
 
 _DATE_PATTERNS = [
     re.compile(r"year=(\d{4})/month=(\d{1,2})/day=(\d{1,2})"),
@@ -72,6 +83,9 @@ class FileEntry:
     placement_verified: bool | None = None
     # Side suggested by the file name only (never authoritative).
     name_hint: str | None = None
+    # What decides which rows of this file are pre-holdout: SCOPE_FOOTER for
+    # daily_aligned, SCOPE_CTF_PENDING for the CTF resolution table, else None.
+    scope_authority: str | None = None
 
 
 def is_parquet(path: str) -> bool:
@@ -177,12 +191,13 @@ def classify(e: FileEntry) -> FileEntry:
     if e.layer == LAYER_CTF:
         if not is_parquet(e.path):
             e.need, e.side = "not-needed", "n/a"
-        elif any(k in low for k in CTF_NEEDED):
-            e.need = "required-ctf-resolution"
-        elif any(k in low for k in CTF_MAPPING):
-            e.need = "optional-ctf-mapping"
+            return e
+        # All-date lifecycle table: no footer placement, no date range, ever.
+        e.side, e.date_source, e.first_day, e.last_day = SIDE_ALL_DATES, None, None, None
+        if any(k in low for k in CTF_NEEDED):
+            e.need, e.scope_authority = "required-ctf-resolution", SCOPE_CTF_PENDING
         elif any(k in low for k in CTF_NOT_NEEDED):
-            e.need, e.side = "not-needed", "n/a"
+            e.need = "not-needed"
         else:
             e.need = "unknown"
             e.notes.append("CTF file with no recognised table name; inspect manually")
@@ -191,6 +206,7 @@ def classify(e: FileEntry) -> FileEntry:
     if not is_parquet(e.path):
         e.need, e.side = "not-needed", "n/a"
         return e
+    e.scope_authority = SCOPE_FOOTER
     if not verified:
         # File names are never authoritative: whatever the name suggests, the
         # file may hold study-period rows until its footer shows otherwise.
@@ -248,7 +264,7 @@ class Listing:
 
 # --- placement authority (the one check every manifest consumer runs) ------
 
-MANIFEST_VERSION = 2
+MANIFEST_VERSION = 3  # 3: CTF all-date entries with pending scope authority (ADR-0026)
 LEGACY_MESSAGE = (
     "manifest lacks authoritative per-file placement; re-run --list --write-manifest "
     "with the current tooling"
@@ -286,9 +302,10 @@ def placement_state(f: FileEntry) -> str:
 def require_authoritative_placement(listing: Listing) -> None:
     """Refuse a manifest unless every daily_aligned Parquet entry -- including
     entries serialized as "not-needed" -- carries authoritative footer placement
-    and its serialized side/need equal what that evidence implies. Serialized
-    ``need`` and the manifest-wide ``footers_probed`` flag are never trusted on
-    their own; nothing is upgraded or reinterpreted."""
+    and its serialized side/need equal what that evidence implies, and every CTF
+    Parquet entry claims no temporal placement (``_require_ctf_entry``).
+    Serialized ``need`` and the manifest-wide ``footers_probed`` flag are never
+    trusted on their own; nothing is upgraded or reinterpreted."""
     if listing.manifest_version != MANIFEST_VERSION or listing.footers_probed is not True:
         raise ManifestError(LEGACY_MESSAGE)
     for f in listing.files:
@@ -312,11 +329,43 @@ def require_authoritative_placement(listing: Listing) -> None:
                 placement_verified=True,
             )
         )
-        if (f.side, f.need) != (expect.side, expect.need):
+        if (f.side, f.need, f.scope_authority) != (
+            expect.side,
+            expect.need,
+            expect.scope_authority,
+        ):
             raise ManifestError(
                 f"{LEGACY_MESSAGE} (serialized side/need {f.side}/{f.need} of {f.path} does "
                 f"not match its footer evidence: {expect.side}/{expect.need})"
             )
+    for f in listing.files:
+        if layer_of(f.path) == LAYER_CTF and is_parquet(f.path):
+            _require_ctf_entry(f)
+
+
+def _require_ctf_entry(f: FileEntry) -> None:
+    """A CTF Parquet entry must never claim temporal placement: no footer
+    timestamps, no verified flag, side all-dates, and (for the resolution table)
+    scope authority still PENDING the A2 loader. Need comes from the path only."""
+    expect = classify(FileEntry(f.path, f.size, f.git_oid, f.sha256))
+    claims_placement = (
+        f.placement_verified is not None
+        or f.ts_min is not None
+        or f.ts_max is not None
+        or f.date_source is not None
+        or f.first_day is not None
+        or f.last_day is not None
+    )
+    if claims_placement or (f.side, f.need, f.scope_authority) != (
+        expect.side,
+        expect.need,
+        expect.scope_authority,
+    ):
+        raise ManifestError(
+            f"CTF entry {f.path} claims temporal placement or a scope it cannot have "
+            f"(expected side {expect.side}, need {expect.need}, scope "
+            f"{expect.scope_authority}); re-run --list --write-manifest"
+        )
 
 
 def load_authoritative_manifest(path) -> Listing:
@@ -341,13 +390,18 @@ def part_files(files: list[FileEntry], part: str) -> list[FileEntry]:
         "pre-holdout": {"required-pre-holdout", "required-both"},
         "holdout": {"required-holdout"},
         "ctf": {"required-ctf-resolution"},
-        "ctf-mapping": {"optional-ctf-mapping"},
         "card": {"required-card"},
     }[part]
     return [f for f in files if f.need in sel]
 
 
-PARTS = ("card", "ctf", "pre-holdout", "holdout", "ctf-mapping")
+PARTS = ("card", "ctf", "pre-holdout", "holdout")
+# Parts that may not be downloaded yet, and why (lifted only with the accepted
+# A2 scoped CTF loader and its tests, ADR-0026).
+DISABLED_PARTS = {
+    "ctf": "CTF downloads are disabled until the A2 scoped CTF-resolution loader and its "
+    "tests are independently accepted (ADR-0026); CTF row scope authority is pending",
+}
 
 
 def missing_days(files: list[FileEntry]) -> list[str]:
@@ -399,7 +453,6 @@ def render(listing: Listing) -> str:
     for need in (
         "required-card",
         "required-ctf-resolution",
-        "optional-ctf-mapping",
         "required-pre-holdout",
         "required-both",
         "required-holdout",
@@ -418,7 +471,8 @@ def render(listing: Listing) -> str:
         "",
         "Download parts (00_fetch.py --download PART --approve-bytes N):",
         f"  card        : {gib(card)}",
-        f"  ctf         : {gib(ctf)}   (CTF resolution support; all dates)",
+        f"  ctf         : {gib(ctf)}   (CTF resolutions; all dates; scope PENDING A2 loader;"
+        " download DISABLED)",
         f"  pre-holdout : {gib(expl)}   "
         "(daily_aligned 2024-12-30 -> 2025-10-07, incl. straddling files)",
         f"  holdout     : {gib(hold)}   "
@@ -491,12 +545,18 @@ def render_manifest_md(listing: Listing) -> str:
         f"- Footer timestamps probed: {listing.footers_probed}",
         f"- Partition boundary: rows with timestamp < {PARTITION_BOUNDARY} "
         f"({PARTITION_BOUNDARY_DAY}T00:00:00Z) are pre-holdout",
+        f"- Scope authority: `daily_aligned` = `{SCOPE_FOOTER}` (verified per file);"
+        f" `CTF/` resolutions = `{SCOPE_CTF_PENDING}` (NOT verified; all-date file;"
+        " download disabled, ADR-0026)",
         "",
-        "| Path | Need | Side | Days | Size (bytes) | SHA-256 |",
-        "| --- | --- | --- | --- | ---: | --- |",
+        "| Path | Need | Side | Scope authority | Days | Size (bytes) | SHA-256 |",
+        "| --- | --- | --- | --- | --- | ---: | --- |",
     ]
     for f in needed:
         days = f"{f.first_day}..{f.last_day} ({f.date_source})" if f.first_day else "-"
         sha = f.sha256 or "computed at download"
-        out.append(f"| `{f.path}` | {f.need} | {f.side} | {days} | {f.size} | `{sha}` |")
+        out.append(
+            f"| `{f.path}` | {f.need} | {f.side} | {f.scope_authority or '-'} | {days} | "
+            f"{f.size} | `{sha}` |"
+        )
     return "\n".join(out) + "\n"

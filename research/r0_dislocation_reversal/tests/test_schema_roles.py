@@ -117,20 +117,49 @@ def test_confirmed_absent_does_not_resolve_a_required_role():
 
 
 def test_ctf_blockers():
-    good = variants(
+    # the real CTF/resolutions.parquet schema (pinned dataset card; footer, 2026-10-07)
+    real = {
+        "id": pa.string(),
+        "condition_id": pa.string(),
+        "oracle": pa.string(),
+        "question_id": pa.string(),
+        "outcome_slot_count": pa.int64(),
+        "payout_numerators": pa.list_(pa.string()),
+    }
+    good = variants(real)
+    res = map_roles(CTF_RESOLUTION_ROLES, good, {})
+    st = {r.key: r.status for r in res}
+    assert st["ctf_record_id"] == st["ctf_payouts"] == st["ctf_slot_count"] == "FOUND"
+    assert "ctf_resolution_ts" not in st  # no timestamp column is expected in CTF/
+    assert ctf_blockers({"CTF/resolutions": res}, {"CTF/resolutions": good}) == []
+    no_id = variants({k: v for k, v in real.items() if k != "id"})
+    res2 = map_roles(CTF_RESOLUTION_ROLES, no_id, {})
+    assert [b.role for b in ctf_blockers({"CTF/r": res2}, {"CTF/r": no_id})] == ["ctf_record_id"]
+    renamed = variants(
         {
-            "condition_id": pa.string(),
-            "block_timestamp": pa.int64(),
-            "payout_numerators": pa.list_(pa.int64()),
+            **{k: v for k, v in real.items() if k != "payout_numerators"},
+            "payouts": pa.list_(pa.string()),
         }
     )
-    res = map_roles(CTF_RESOLUTION_ROLES, good, {"ctf_payouts": "payout_numerators"})
-    assert ctf_blockers({"CTF/resolutions": res}, {"CTF/resolutions": good}) == []
-    res2 = map_roles(CTF_RESOLUTION_ROLES, good, {})
-    assert [b.role for b in ctf_blockers({"CTF/r": res2}, {"CTF/r": good})] == ["ctf_payouts"]
+    res3 = map_roles(CTF_RESOLUTION_ROLES, renamed, {})
+    assert [b.role for b in ctf_blockers({"CTF/r": res3}, {"CTF/r": renamed})] == ["ctf_payouts"]
     assert [b.role for b in ctf_blockers({}, {"CTF/r": good})] == ["ctf_resolution_table"]
     two = ctf_blockers({"CTF/a": res, "CTF/b": res}, {"CTF/a": good, "CTF/b": good})
     assert [b.role for b in two] == ["ctf_resolution_table"] and "CTF/a" in two[0].problem
+
+
+def test_no_metadata_fallback_for_resolution_time_or_value():
+    """t_res and v(m) never come from frozen metadata (§5.3, A2)."""
+    import re
+
+    for r in CTF_RESOLUTION_ROLES:
+        for col in ("resolved_at", "winning_outcome_label", "resolution_status", "block_timestamp"):
+            assert col not in r.exact and not re.search(r.hints, col, re.I), (r.key, col)
+    daily_with_meta = variants(
+        {"resolved_at": pa.timestamp("us"), "winning_outcome_label": pa.string()}
+    )
+    res = map_roles(CTF_RESOLUTION_ROLES, daily_with_meta, {})
+    assert all(r.status == "MISSING" for r in res if r.level == "required")
 
 
 @pytest.mark.parametrize(

@@ -644,3 +644,49 @@ Template:
 - Consequences: a regression test (`test_schema_report_is_holdout_blind`)
   inspects holdout schemas and asserts that no row count or equivalent
   volume statistic appears in the JSON, Markdown or printed report.
+
+## ADR-0026 — R0 amendment A2 (proposed): CTF resolution time from Polygon block headers; CTF scope authority
+
+- Date: 2026-10-07
+- Status: **Proposed.** Owner-approved in principle (2026-10-07): block-number
+  scoping against `B*`, raw Polygon block headers as an analysis enrichment
+  for CTF event timestamps only, fail-closed loading, K0 exact-log
+  verification, preparations not required. Subject to targeted independent
+  review and the future re-freeze; the frozen preregistration (`287afbe`) is
+  not edited.
+- Origin: owner direction; amendment text and implementation by the agent.
+- Context: the pinned `CTF/resolutions.parquet`
+  (`5aa1b9d52316a8b2e789e81c8ae42c7ed532e8aa`) has no timestamp column
+  (footer schema read 2026-10-07, schema only). The pinned dataset card (blob
+  `a1146ecd8d7612b3c327e6a9633feb53e253c7b5`, L196, L232, L236, L241,
+  L259–260, L269) documents `id = chainId_blockNumber_logIndex` and that
+  `block_timestamp` exists only in the trade layers. §5.3's t_res cannot be
+  computed from the pinned dataset alone. The previous manifest tooling
+  footer-probed CTF files for placement and refused to write a manifest
+  because they have no timestamp column.
+- Decision:
+  - Draft amendment A2:
+    `research/r0_dislocation_reversal/proposals/A2_CTF_RESOLUTION_TIME_DRAFT.md`.
+  - Scope authority: `daily_aligned` = footer `block_timestamp` statistics
+    (unchanged); `CTF/resolutions` = `id` block number vs. `B*` through a
+    dedicated scoped loader, recorded as `pending-A2-ctf-loader` until that
+    loader exists and is accepted.
+  - Manifest (version 3): CTF files are not footer-probed; CTF Parquet entries
+    are all-date (`side = all-dates`), never carry footer timestamps or a
+    verified flag, and the resolution table's scope is pending. A manifest
+    claiming CTF placement is refused by every consumer. `CTF/preparations`
+    is `not-needed`; the `ctf-mapping` part is removed.
+  - The `ctf` download part is disabled until the scoped CTF loader and its
+    tests are independently accepted. There is no CTF row access: the only
+    row reader needs a timestamp column, which CTF tables lack.
+  - Stage C CTF roles: `id` (record id, source of the block number),
+    `condition_id`, `outcome_slot_count`, `payout_numerators`, matched by the
+    names documented on the pinned card. FOUND means "documented column
+    present" only; the outcome_seq ↔ payout-slot mapping stays a K0 check.
+    No role falls back to `resolved_at` or `winning_outcome_label`.
+- Open before the loader is relied on: authoritative Polygon/Bor
+  documentation on block-timestamp ordering; `eth_getBlockByNumber` semantics;
+  a read-only RPC endpoint (ADR-0013) whose host the environment allows.
+- Consequences: Stage C schema inspection no longer depends on CTF placement.
+  The A2 loader, the RPC client, CTF downloads and K0 remain unimplemented and
+  unauthorized.
