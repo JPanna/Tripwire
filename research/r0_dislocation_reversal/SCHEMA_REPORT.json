@@ -1,0 +1,825 @@
+{
+ "generated_at_utc": "2026-10-07T22:11:50Z",
+ "dataset": "TimeSeventeen/Polymarket-v1",
+ "revision_sha": "5aa1b9d52316a8b2e789e81c8ae42c7ed532e8aa",
+ "source": "remote",
+ "confirmations": {},
+ "ctf_resolution_table_designated_by_owner": null,
+ "daily_aligned": {
+  "files": 485,
+  "footers_read": 485,
+  "missing": 0,
+  "unreadable": [],
+  "sampled": false,
+  "schema_variants": [
+   {
+    "columns": [
+     [
+      "asset_id",
+      "large_string",
+      "string"
+     ],
+     [
+      "block_timestamp",
+      "int64",
+      "int"
+     ],
+     [
+      "price",
+      "double",
+      "float"
+     ],
+     [
+      "maker",
+      "large_string",
+      "string"
+     ],
+     [
+      "taker",
+      "large_string",
+      "string"
+     ],
+     [
+      "taker_direction",
+      "large_string",
+      "string"
+     ],
+     [
+      "usdc_amount",
+      "double",
+      "float"
+     ],
+     [
+      "fee_usdc",
+      "double",
+      "float"
+     ],
+     [
+      "condition_id",
+      "large_string",
+      "string"
+     ],
+     [
+      "outcome_seq",
+      "int64",
+      "int"
+     ],
+     [
+      "neg_risk",
+      "large_string",
+      "string"
+     ],
+     [
+      "category",
+      "large_string",
+      "string"
+     ],
+     [
+      "category_refined",
+      "large_string",
+      "string"
+     ],
+     [
+      "outcome_label",
+      "large_string",
+      "string"
+     ],
+     [
+      "winning_outcome_label",
+      "large_string",
+      "string"
+     ],
+     [
+      "resolution_status",
+      "large_string",
+      "string"
+     ],
+     [
+      "taker_base_fee",
+      "double",
+      "float"
+     ],
+     [
+      "maker_base_fee",
+      "double",
+      "float"
+     ],
+     [
+      "opens_at",
+      "timestamp[us, tz=UTC]",
+      "timestamp"
+     ],
+     [
+      "close_at",
+      "timestamp[us, tz=UTC]",
+      "timestamp"
+     ],
+     [
+      "resolved_at",
+      "timestamp[us, tz=UTC]",
+      "timestamp"
+     ],
+     [
+      "market_slug",
+      "large_string",
+      "string"
+     ],
+     [
+      "p_event",
+      "double",
+      "float"
+     ],
+     [
+      "D",
+      "int8",
+      "int"
+     ]
+    ],
+    "files": 485,
+    "first_day": "2024-12-30",
+    "last_day": "2026-04-28",
+    "example_path": "daily_aligned/2024_12_30.parquet"
+   }
+  ],
+  "roles": [
+   {
+    "key": "market_id",
+    "level": "required",
+    "status": "FOUND",
+    "column": "condition_id",
+    "candidates": [
+     "market_slug"
+    ],
+    "types": [
+     "string"
+    ],
+    "spec": "\u00a73: one market m = one condition_id; \u00a78.1 cluster",
+    "note": ""
+   },
+   {
+    "key": "timestamp",
+    "level": "required",
+    "status": "FOUND",
+    "column": "block_timestamp",
+    "candidates": [],
+    "types": [
+     "int"
+    ],
+    "spec": "\u00a73: tau_r block timestamp, integer seconds",
+    "note": ""
+   },
+   {
+    "key": "p_event",
+    "level": "required",
+    "status": "FOUND",
+    "column": "p_event",
+    "candidates": [],
+    "types": [
+     "float"
+    ],
+    "spec": "\u00a73: p_r = p_event, reference-outcome price in (0,1)",
+    "note": ""
+   },
+   {
+    "key": "direction_D",
+    "level": "required",
+    "status": "FOUND",
+    "column": "D",
+    "candidates": [
+     "taker_direction"
+    ],
+    "types": [
+     "int"
+    ],
+    "spec": "\u00a73: D_r aggressor direction in {+1,-1} on the reference axis",
+    "note": ""
+   },
+   {
+    "key": "outcome_seq",
+    "level": "required",
+    "status": "FOUND",
+    "column": "outcome_seq",
+    "candidates": [
+     "outcome_label",
+     "winning_outcome_label"
+    ],
+    "types": [
+     "int"
+    ],
+    "spec": "\u00a72.1 p_event definition; \u00a75.3 outcome_seq <-> CTF slot mapping (checked at K0)",
+    "note": ""
+   },
+   {
+    "key": "shares",
+    "level": "one-of-shares",
+    "status": "MISSING",
+    "column": null,
+    "candidates": [],
+    "types": [],
+    "spec": "\u00a73: q_r from a share-quantity column if present (OrderFilled has token_amount, \u00a72.1)",
+    "note": ""
+   },
+   {
+    "key": "usdc_amount",
+    "level": "required-k0",
+    "status": "FOUND",
+    "column": "usdc_amount",
+    "candidates": [
+     "fee_usdc"
+    ],
+    "types": [
+     "float"
+    ],
+    "spec": "\u00a73 q_r fallback usdc_amount/price; \u00a77 matching on (token, maker, taker, USDC amount)",
+    "note": ""
+   },
+   {
+    "key": "price",
+    "level": "one-of-shares",
+    "status": "FOUND",
+    "column": "price",
+    "candidates": [],
+    "types": [
+     "float"
+    ],
+    "spec": "\u00a73 q_r fallback usdc_amount/price; \u00a72.1 p_event = price or 1 - price",
+    "note": ""
+   },
+   {
+    "key": "token_id",
+    "level": "required-k0",
+    "status": "CANDIDATES",
+    "column": null,
+    "candidates": [
+     "asset_id"
+    ],
+    "types": [],
+    "spec": "\u00a77 matching on token ID; token -> (condition, slot)",
+    "note": "no column with the spec's name; owner must confirm or reject"
+   },
+   {
+    "key": "maker",
+    "level": "required-k0",
+    "status": "FOUND",
+    "column": "maker",
+    "candidates": [
+     "maker_base_fee"
+    ],
+    "types": [
+     "string"
+    ],
+    "spec": "\u00a77 matching on maker",
+    "note": ""
+   },
+   {
+    "key": "taker",
+    "level": "required-k0",
+    "status": "FOUND",
+    "column": "taker",
+    "candidates": [
+     "taker_base_fee"
+    ],
+    "types": [
+     "string"
+    ],
+    "spec": "\u00a77 matching on taker",
+    "note": ""
+   },
+   {
+    "key": "taker_direction",
+    "level": "optional",
+    "status": "FOUND",
+    "column": "taker_direction",
+    "candidates": [],
+    "types": [
+     "string"
+    ],
+    "spec": "\u00a72.1 D = sign(taker_direction) x (+-1 by outcome_seq); compared at K0",
+    "note": ""
+   },
+   {
+    "key": "block_number",
+    "level": "optional",
+    "status": "MISSING",
+    "column": null,
+    "candidates": [],
+    "types": [],
+    "spec": "\u00a77 provider IDs may locate records (never define completeness)",
+    "note": ""
+   },
+   {
+    "key": "log_index",
+    "level": "optional",
+    "status": "MISSING",
+    "column": null,
+    "candidates": [],
+    "types": [],
+    "spec": "\u00a77 locate records",
+    "note": ""
+   },
+   {
+    "key": "row_id",
+    "level": "optional",
+    "status": "CANDIDATES",
+    "column": null,
+    "candidates": [
+     "asset_id",
+     "condition_id"
+    ],
+    "types": [],
+    "spec": "\u00a72.1 OrderFilled.id = chainId_blockNumber_logIndex (locating only)",
+    "note": "no column with the spec's name; owner must confirm or reject"
+   },
+   {
+    "key": "neg_risk",
+    "level": "optional",
+    "status": "AMBIGUOUS",
+    "column": "neg_risk",
+    "candidates": [],
+    "types": [
+     "string"
+    ],
+    "spec": "\u00a72.1 daily_aligned is neg_risk = false (scope sanity check)",
+    "note": "type ['string'] not in expected ['bool', 'int']"
+   },
+   {
+    "key": "fee",
+    "level": "optional",
+    "status": "CANDIDATES",
+    "column": null,
+    "candidates": [
+     "fee_usdc",
+     "maker_base_fee",
+     "taker_base_fee"
+    ],
+    "types": [],
+    "spec": "\u00a77 gross-or-net quantity formula",
+    "note": "no column with the spec's name; owner must confirm or reject"
+   },
+   {
+    "key": "category",
+    "level": "metadata",
+    "status": "FOUND",
+    "column": "category",
+    "candidates": [
+     "category_refined"
+    ],
+    "types": [
+     "string"
+    ],
+    "spec": "\u00a74.3 S_short category/tags; \u00a78.6 category segment",
+    "note": ""
+   },
+   {
+    "key": "tags",
+    "level": "metadata",
+    "status": "MISSING",
+    "column": null,
+    "candidates": [],
+    "types": [],
+    "spec": "\u00a74.3 S_short category/tags",
+    "note": ""
+   },
+   {
+    "key": "question",
+    "level": "metadata",
+    "status": "MISSING",
+    "column": null,
+    "candidates": [],
+    "types": [],
+    "spec": "\u00a74.3 S_short regex on question",
+    "note": ""
+   },
+   {
+    "key": "slug",
+    "level": "metadata",
+    "status": "CANDIDATES",
+    "column": null,
+    "candidates": [
+     "market_slug"
+    ],
+    "types": [],
+    "spec": "\u00a74.3 S_short regex on slug",
+    "note": "no column with the spec's name; owner must confirm or reject"
+   },
+   {
+    "key": "scheduled_end",
+    "level": "metadata",
+    "status": "MISSING",
+    "column": null,
+    "candidates": [],
+    "types": [],
+    "spec": "\u00a74.3 originally scheduled end time; \u00a78.6 time-to-end segment",
+    "note": ""
+   }
+  ],
+  "coverage_utc": [
+   "2024-12-30T00:00:02Z",
+   "2026-04-28T11:00:40Z"
+  ]
+ },
+ "ctf": {
+  "CTF/merges": {
+   "files": 1,
+   "footers_read": 1,
+   "missing": 0,
+   "unreadable": [],
+   "sampled": false,
+   "schema_variants": [
+    {
+     "columns": [
+      [
+       "id",
+       "string",
+       "string"
+      ],
+      [
+       "stakeholder",
+       "string",
+       "string"
+      ],
+      [
+       "collateral_token",
+       "string",
+       "string"
+      ],
+      [
+       "parent_collection_id",
+       "string",
+       "string"
+      ],
+      [
+       "condition_id",
+       "string",
+       "string"
+      ],
+      [
+       "partition",
+       "list<element: string>",
+       "list"
+      ],
+      [
+       "usdc_amount",
+       "double",
+       "float"
+      ]
+     ],
+     "files": 1,
+     "first_day": null,
+     "last_day": null,
+     "example_path": "CTF/merges.parquet"
+    }
+   ],
+   "roles": [],
+   "is_resolution_table": false
+  },
+  "CTF/preparations": {
+   "files": 1,
+   "footers_read": 1,
+   "missing": 0,
+   "unreadable": [],
+   "sampled": false,
+   "schema_variants": [
+    {
+     "columns": [
+      [
+       "id",
+       "string",
+       "string"
+      ],
+      [
+       "condition_id",
+       "string",
+       "string"
+      ],
+      [
+       "oracle",
+       "string",
+       "string"
+      ],
+      [
+       "question_id",
+       "string",
+       "string"
+      ],
+      [
+       "outcome_slot_count",
+       "int64",
+       "int"
+      ]
+     ],
+     "files": 1,
+     "first_day": null,
+     "last_day": null,
+     "example_path": "CTF/preparations.parquet"
+    }
+   ],
+   "roles": [],
+   "is_resolution_table": false
+  },
+  "CTF/redemptions": {
+   "files": 1,
+   "footers_read": 1,
+   "missing": 0,
+   "unreadable": [],
+   "sampled": false,
+   "schema_variants": [
+    {
+     "columns": [
+      [
+       "id",
+       "string",
+       "string"
+      ],
+      [
+       "redeemer",
+       "string",
+       "string"
+      ],
+      [
+       "collateral_token",
+       "string",
+       "string"
+      ],
+      [
+       "parent_collection_id",
+       "string",
+       "string"
+      ],
+      [
+       "condition_id",
+       "string",
+       "string"
+      ],
+      [
+       "index_sets",
+       "list<element: string>",
+       "list"
+      ],
+      [
+       "usdc_amount",
+       "double",
+       "float"
+      ]
+     ],
+     "files": 1,
+     "first_day": null,
+     "last_day": null,
+     "example_path": "CTF/redemptions.parquet"
+    }
+   ],
+   "roles": [],
+   "is_resolution_table": false
+  },
+  "CTF/resolutions": {
+   "files": 1,
+   "footers_read": 1,
+   "missing": 0,
+   "unreadable": [],
+   "sampled": false,
+   "schema_variants": [
+    {
+     "columns": [
+      [
+       "id",
+       "string",
+       "string"
+      ],
+      [
+       "condition_id",
+       "string",
+       "string"
+      ],
+      [
+       "oracle",
+       "string",
+       "string"
+      ],
+      [
+       "question_id",
+       "string",
+       "string"
+      ],
+      [
+       "outcome_slot_count",
+       "int64",
+       "int"
+      ],
+      [
+       "payout_numerators",
+       "list<element: string>",
+       "list"
+      ]
+     ],
+     "files": 1,
+     "first_day": null,
+     "last_day": null,
+     "example_path": "CTF/resolutions.parquet"
+    }
+   ],
+   "roles": [
+    {
+     "key": "ctf_condition_id",
+     "level": "required",
+     "status": "FOUND",
+     "column": "condition_id",
+     "candidates": [],
+     "types": [
+      "string"
+     ],
+     "spec": "\u00a75.3 the condition's resolution event",
+     "note": ""
+    },
+    {
+     "key": "ctf_record_id",
+     "level": "required",
+     "status": "FOUND",
+     "column": "id",
+     "candidates": [],
+     "types": [
+      "string"
+     ],
+     "spec": "A2 (proposed): documented record id chainId_blockNumber_logIndex, the source of the block number for t_res; not a timestamp column",
+     "note": ""
+    },
+    {
+     "key": "ctf_payouts",
+     "level": "required",
+     "status": "FOUND",
+     "column": "payout_numerators",
+     "candidates": [],
+     "types": [
+      "list"
+     ],
+     "spec": "\u00a75.3 v(m) = payout numerator / sum of numerators (documented column; the outcome_seq <-> slot mapping is not confirmed here: K0)",
+     "note": ""
+    },
+    {
+     "key": "ctf_slot_count",
+     "level": "required",
+     "status": "FOUND",
+     "column": "outcome_slot_count",
+     "candidates": [],
+     "types": [
+      "int"
+     ],
+     "spec": "A2 (proposed): payout-vector length check; outcome-slot mapping support (K0)",
+     "note": ""
+    },
+    {
+     "key": "ctf_event_type",
+     "level": "optional",
+     "status": "MISSING",
+     "column": null,
+     "candidates": [],
+     "types": [],
+     "spec": "needed only if a table mixes resolutions with other events",
+     "note": ""
+    },
+    {
+     "key": "ctf_block_number",
+     "level": "optional",
+     "status": "MISSING",
+     "column": null,
+     "candidates": [],
+     "types": [],
+     "spec": "\u00a77 K0 locate",
+     "note": ""
+    },
+    {
+     "key": "ctf_log_index",
+     "level": "optional",
+     "status": "MISSING",
+     "column": null,
+     "candidates": [],
+     "types": [],
+     "spec": "\u00a77 K0 locate",
+     "note": ""
+    }
+   ],
+   "is_resolution_table": true
+  },
+  "CTF/splits": {
+   "files": 1,
+   "footers_read": 1,
+   "missing": 0,
+   "unreadable": [],
+   "sampled": false,
+   "schema_variants": [
+    {
+     "columns": [
+      [
+       "id",
+       "string",
+       "string"
+      ],
+      [
+       "stakeholder",
+       "string",
+       "string"
+      ],
+      [
+       "collateral_token",
+       "string",
+       "string"
+      ],
+      [
+       "parent_collection_id",
+       "string",
+       "string"
+      ],
+      [
+       "condition_id",
+       "string",
+       "string"
+      ],
+      [
+       "partition",
+       "list<element: string>",
+       "list"
+      ],
+      [
+       "usdc_amount",
+       "double",
+       "float"
+      ]
+     ],
+     "files": 1,
+     "first_day": null,
+     "last_day": null,
+     "example_path": "CTF/splits.parquet"
+    }
+   ],
+   "roles": [],
+   "is_resolution_table": false
+  }
+ },
+ "blockers": [
+  {
+   "role": "token_id",
+   "frozen_rule": "\u00a77 matching on token ID; token -> (condition, slot)",
+   "problem": "role is CANDIDATES; candidates: asset_id (no column with the spec's name; owner must confirm or reject)",
+   "available_fields": [
+    "D: int8",
+    "asset_id: large_string",
+    "block_timestamp: int64",
+    "category: large_string",
+    "category_refined: large_string",
+    "close_at: timestamp[us, tz=UTC]",
+    "condition_id: large_string",
+    "fee_usdc: double",
+    "maker: large_string",
+    "maker_base_fee: double",
+    "market_slug: large_string",
+    "neg_risk: large_string",
+    "opens_at: timestamp[us, tz=UTC]",
+    "outcome_label: large_string",
+    "outcome_seq: int64",
+    "p_event: double",
+    "price: double",
+    "resolution_status: large_string",
+    "resolved_at: timestamp[us, tz=UTC]",
+    "taker: large_string",
+    "taker_base_fee: double",
+    "taker_direction: large_string",
+    "usdc_amount: double",
+    "winning_outcome_label: large_string"
+   ],
+   "smallest_resolution": "Owner confirms a candidate with --confirm token_id=<column> if it carries exactly this meaning; otherwise: Amend \u00a77 matching to (condition_id, outcome_seq) after a chain-side token -> (condition, slot) derivation.",
+   "amendment": "No, if the owner confirms a candidate with identical meaning; otherwise yes."
+  },
+  {
+   "role": "shares",
+   "frozen_rule": "\u00a73 q_r: a share-quantity column if daily_aligned has one; otherwise usdc_amount / price",
+   "problem": "share role unresolved (MISSING; no heuristic candidate, which does not show that none exists)",
+   "available_fields": [
+    "D: int8",
+    "asset_id: large_string",
+    "block_timestamp: int64",
+    "category: large_string",
+    "category_refined: large_string",
+    "close_at: timestamp[us, tz=UTC]",
+    "condition_id: large_string",
+    "fee_usdc: double",
+    "maker: large_string",
+    "maker_base_fee: double",
+    "market_slug: large_string",
+    "neg_risk: large_string",
+    "opens_at: timestamp[us, tz=UTC]",
+    "outcome_label: large_string",
+    "outcome_seq: int64",
+    "p_event: double",
+    "price: double",
+    "resolution_status: large_string",
+    "resolved_at: timestamp[us, tz=UTC]",
+    "taker: large_string",
+    "taker_base_fee: double",
+    "taker_direction: large_string",
+    "usdc_amount: double",
+    "winning_outcome_label: large_string"
+   ],
+   "smallest_resolution": "Owner states which column is the share quantity (--confirm shares=<column>) or that none exists (--confirm shares=NONE); units and gross/net are checked at K0.",
+   "amendment": "No"
+  }
+ ]
+}
