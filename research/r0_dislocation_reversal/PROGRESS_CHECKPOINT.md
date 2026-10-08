@@ -1,7 +1,7 @@
-# R0 progress checkpoint — 2026-10-07
+# R0 progress checkpoint — 2026-10-08
 
-A record of where R0 stands at the end of the 2026-10-07 session. It changes
-nothing: the governing texts are `docs/RISK_INVARIANTS.md`,
+A record of where R0 stands (first written 2026-10-07; updated 2026-10-08 after
+Stage C schema inspection cleared). It changes nothing: the governing texts are `docs/RISK_INVARIANTS.md`,
 `PREREGISTRATION.md` (frozen), `docs/DECISIONS.md` and `DATA_ACCESS.md`.
 
 ## 1. Project state and architecture
@@ -86,33 +86,49 @@ nothing: the governing texts are `docs/RISK_INVARIANTS.md`,
   `market_slug` large_string, `p_event` double, `D` int8.
 - FOUND: condition_id, block_timestamp, p_event, D, outcome_seq, usdc_amount,
   price, maker, taker, taker_direction, category.
+- **Stage C schema inspection cleared (2026-10-08, exit 0):**
+  `01_schema.py schema --source remote --confirm token_id=asset_id --confirm
+  shares=NONE --confirm slug=market_slug`. Footers of 485/485 required files
+  read; no missing or unreadable files; one schema variant; no blockers.
 - `CTF/resolutions`: `id` string, `condition_id` string, `oracle` string,
   `question_id` string, `outcome_slot_count` int64, `payout_numerators`
   list<string>. No timestamp column (card L259); `id` =
   `chainId_blockNumber_logIndex` (card L196, L236, L260).
 
-## 6. Unresolved required roles (schema exit 3)
+## 6. Owner-confirmed role mappings (2026-10-08)
 
-- **token_id**: candidate `asset_id` (card: "Outcome token id traded in this
-  fill"). Owner must confirm or reject; meaning validated at K0.
-- **shares**: no share-quantity column in `daily_aligned` (`token_amount` is
-  only in `OrderFilled/`). Owner must state `shares=NONE` (§3 `usdc_amount /
-  price` fallback) or name a column.
+Recorded in `SCHEMA_REPORT.json`/`.md`; both former required-role blockers are
+resolved.
+
+| Role | Mapping | Report status |
+| --- | --- | --- |
+| token_id | `asset_id` (card: "Outcome token id traded in this fill") | CONFIRMED |
+| shares | `NONE`: no share-quantity column in `daily_aligned` (`token_amount` is only in `OrderFilled/`) | CONFIRMED_ABSENT |
+| slug | `market_slug` | CONFIRMED |
+
+- `shares=NONE` means no direct share column, not zero quantity: share
+  quantity uses the frozen §3 fallback `usdc_amount / price`. The exact
+  quantity, units and fee (gross-or-net) treatment remain subject to K0.
+- token_id's meaning (token → condition, slot) is still validated at K0.
 
 ## 7. Other pending decisions and amendments
 
-- `slug`: candidate `market_slug` (owner confirmation).
+Unresolved (none confirmed; none blocks Stage C):
+
 - `scheduled_end`: candidate `close_at` (named by the owner; the tool's hint
   does not match it). Whether it is the *originally scheduled* end is
   unvalidated (frozen metadata snapshot, card L264/L310).
 - `tags` and `question`: absent. S_short (§4.3) then needs either category
   (or `category_refined`) + slug only, or one pinned Gamma snapshot (§2.2).
-- `neg_risk`: large_string, not bool/int (optional role).
+- `neg_risk`: large_string, not bool/int (optional role; reported AMBIGUOUS).
+- `fee`: candidates `fee_usdc`, `taker_base_fee`, `maker_base_fee`; the fee
+  formula is a K0 question.
 - Semantic validation pending at K0: p_event and D definitions,
   taker_direction sign, outcome_seq ↔ CTF payout-slot mapping, token → (condition, slot).
-- **A1** (S_short classifier, `proposals/S_SHORT_AMENDMENT_DRAFT.md`): draft;
-  must be revised for the missing question/tags; not frozen.
-- **A2** (`proposals/A2_CTF_RESOLUTION_TIME_DRAFT.md`, ADR-0026): PROPOSED;
+- **A1** (S_short classifier, `proposals/S_SHORT_AMENDMENT_DRAFT.md`): draft,
+  proposed and unfrozen; must be revised for the missing question/tags.
+- **A2** (`proposals/A2_CTF_RESOLUTION_TIME_DRAFT.md`, ADR-0026): PROPOSED and
+  unfrozen;
   t_res from the Polygon block header of the block in the CTF `id`; scoping by
   block number vs. B\*; fail closed; K0 exact-log verification. Open: cite
   authoritative Polygon/Bor documentation on timestamp ordering before
@@ -124,31 +140,36 @@ nothing: the governing texts are `docs/RISK_INVARIANTS.md`,
 - Any download (pre-holdout, holdout, CTF); CTF downloads are disabled in code.
 - vocab and domain checks; K0; event detection (Stage D, and not before the
   S_short amendment is re-frozen); outcomes, SSTR, statistics; any holdout read.
-- Freezing A1/A2; role confirmations; any change to `PREREGISTRATION.md`.
+- Freezing A1/A2; role confirmations beyond the three above; any change to
+  `PREREGISTRATION.md`.
+- Status: no research corpus has been downloaded; no K0, event detection,
+  outcome, SSTR or statistical analysis has been performed.
 - Any execution, order, wallet or trading code (never in R0).
 
 ## 9. Recommended next steps (each needs owner authorization)
 
-1. Owner decisions on token_id and shares; then on slug, scheduled_end,
-   S_short metadata source (category/slug vs. Gamma snapshot) and neg_risk.
-2. Re-run `01_schema.py schema --confirm …` with those decisions (remote).
-3. Approve `--download pre-holdout --approve-bytes 546269510` (and the card).
-4. Exploration-only vocab and domain checks; revise and audit A1.
-5. Verify Polygon/Bor timestamp ordering; then implement the A2 RPC client and
+1. Owner decisions on scheduled_end, the S_short metadata source
+   (category/slug vs. Gamma snapshot) and neg_risk; re-run the schema step
+   with any new confirmations (remote).
+2. Approve `--download pre-holdout --approve-bytes 546269510` (and the card).
+3. Exploration-only vocab and domain checks; revise and audit A1.
+4. Verify Polygon/Bor timestamp ordering; then implement the A2 RPC client and
    scoped CTF loader for independent review; enable the CTF download only after
    acceptance.
-6. K0 preparation; re-freeze with A1/A2 before any event detection.
+5. K0 preparation; re-freeze with A1/A2 before any event detection.
 
 ## 10. Provenance
 
-- Code: branch `research/r0-uafr`; reports generated at
-  `e14807727339c31507223185e83829d42afa2014`; this checkpoint is committed on
-  top of it.
+- Code: branch `research/r0-uafr`. Manifest generated at
+  `e14807727339c31507223185e83829d42afa2014`; the cleared schema report
+  regenerated at `5e6455bb4c405592c7034dada508ea345a6fbadf` (no code change
+  between the two). This checkpoint is committed on top of `5e6455b`.
 - Data: `TimeSeventeen/Polymarket-v1` @ `5aa1b9d52316a8b2e789e81c8ae42c7ed532e8aa`,
   endpoint `https://huggingface.co`; footers read through the CDN host
   `us.aws.cdn.hf.co` (allowed by the environment's network policy).
 - Generated files: `DATA_MANIFEST.json/.md` (2026-10-07T22:10:51Z),
-  `SCHEMA_REPORT.json/.md` (2026-10-07T22:11:50Z). They hold no row values, no
+  `SCHEMA_REPORT.json/.md` (2026-10-08T08:15:10Z, with the three owner
+  confirmations). They hold no row values, no
   credentials, no outcomes and no row/row-group counts; the only holdout-derived
   values are file placement (per-file footer block-timestamp min/max, sizes,
   hashes), which ADR-0025 authorizes.

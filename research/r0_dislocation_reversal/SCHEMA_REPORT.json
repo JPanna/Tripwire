@@ -1,9 +1,13 @@
 {
- "generated_at_utc": "2026-10-07T22:11:50Z",
+ "generated_at_utc": "2026-10-08T08:15:10Z",
  "dataset": "TimeSeventeen/Polymarket-v1",
  "revision_sha": "5aa1b9d52316a8b2e789e81c8ae42c7ed532e8aa",
  "source": "remote",
- "confirmations": {},
+ "confirmations": {
+  "token_id": "asset_id",
+  "shares": "NONE",
+  "slug": "market_slug"
+ },
  "ctf_resolution_table_designated_by_owner": null,
  "daily_aligned": {
   "files": 485,
@@ -212,12 +216,12 @@
    {
     "key": "shares",
     "level": "one-of-shares",
-    "status": "MISSING",
+    "status": "CONFIRMED_ABSENT",
     "column": null,
     "candidates": [],
     "types": [],
     "spec": "\u00a73: q_r from a share-quantity column if present (OrderFilled has token_amount, \u00a72.1)",
-    "note": ""
+    "note": "owner confirmed: no column carries this role"
    },
    {
     "key": "usdc_amount",
@@ -248,14 +252,16 @@
    {
     "key": "token_id",
     "level": "required-k0",
-    "status": "CANDIDATES",
-    "column": null,
+    "status": "CONFIRMED",
+    "column": "asset_id",
     "candidates": [
      "asset_id"
     ],
-    "types": [],
+    "types": [
+     "string"
+    ],
     "spec": "\u00a77 matching on token ID; token -> (condition, slot)",
-    "note": "no column with the spec's name; owner must confirm or reject"
+    "note": "owner-confirmed mapping"
    },
    {
     "key": "maker",
@@ -393,14 +399,16 @@
    {
     "key": "slug",
     "level": "metadata",
-    "status": "CANDIDATES",
-    "column": null,
+    "status": "CONFIRMED",
+    "column": "market_slug",
     "candidates": [
      "market_slug"
     ],
-    "types": [],
+    "types": [
+     "string"
+    ],
     "spec": "\u00a74.3 S_short regex on slug",
-    "note": "no column with the spec's name; owner must confirm or reject"
+    "note": "owner-confirmed mapping"
    },
    {
     "key": "scheduled_end",
@@ -754,72 +762,5 @@
    "is_resolution_table": false
   }
  },
- "blockers": [
-  {
-   "role": "token_id",
-   "frozen_rule": "\u00a77 matching on token ID; token -> (condition, slot)",
-   "problem": "role is CANDIDATES; candidates: asset_id (no column with the spec's name; owner must confirm or reject)",
-   "available_fields": [
-    "D: int8",
-    "asset_id: large_string",
-    "block_timestamp: int64",
-    "category: large_string",
-    "category_refined: large_string",
-    "close_at: timestamp[us, tz=UTC]",
-    "condition_id: large_string",
-    "fee_usdc: double",
-    "maker: large_string",
-    "maker_base_fee: double",
-    "market_slug: large_string",
-    "neg_risk: large_string",
-    "opens_at: timestamp[us, tz=UTC]",
-    "outcome_label: large_string",
-    "outcome_seq: int64",
-    "p_event: double",
-    "price: double",
-    "resolution_status: large_string",
-    "resolved_at: timestamp[us, tz=UTC]",
-    "taker: large_string",
-    "taker_base_fee: double",
-    "taker_direction: large_string",
-    "usdc_amount: double",
-    "winning_outcome_label: large_string"
-   ],
-   "smallest_resolution": "Owner confirms a candidate with --confirm token_id=<column> if it carries exactly this meaning; otherwise: Amend \u00a77 matching to (condition_id, outcome_seq) after a chain-side token -> (condition, slot) derivation.",
-   "amendment": "No, if the owner confirms a candidate with identical meaning; otherwise yes."
-  },
-  {
-   "role": "shares",
-   "frozen_rule": "\u00a73 q_r: a share-quantity column if daily_aligned has one; otherwise usdc_amount / price",
-   "problem": "share role unresolved (MISSING; no heuristic candidate, which does not show that none exists)",
-   "available_fields": [
-    "D: int8",
-    "asset_id: large_string",
-    "block_timestamp: int64",
-    "category: large_string",
-    "category_refined: large_string",
-    "close_at: timestamp[us, tz=UTC]",
-    "condition_id: large_string",
-    "fee_usdc: double",
-    "maker: large_string",
-    "maker_base_fee: double",
-    "market_slug: large_string",
-    "neg_risk: large_string",
-    "opens_at: timestamp[us, tz=UTC]",
-    "outcome_label: large_string",
-    "outcome_seq: int64",
-    "p_event: double",
-    "price: double",
-    "resolution_status: large_string",
-    "resolved_at: timestamp[us, tz=UTC]",
-    "taker: large_string",
-    "taker_base_fee: double",
-    "taker_direction: large_string",
-    "usdc_amount: double",
-    "winning_outcome_label: large_string"
-   ],
-   "smallest_resolution": "Owner states which column is the share quantity (--confirm shares=<column>) or that none exists (--confirm shares=NONE); units and gross/net are checked at K0.",
-   "amendment": "No"
-  }
- ]
+ "blockers": []
 }

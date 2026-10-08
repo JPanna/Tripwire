@@ -5,8 +5,8 @@ timestamps only; no row counts or other data-volume statistics (ADR-0025). The
 domain-check section, if present, uses exploration-period rows only.
 
 - Dataset `TimeSeventeen/Polymarket-v1` at `5aa1b9d52316a8b2e789e81c8ae42c7ed532e8aa`; source: remote
-- Generated: 2026-10-07T22:11:50Z
-- Owner confirmations: none
+- Generated: 2026-10-08T08:15:10Z
+- Owner confirmations: {'token_id': 'asset_id', 'shares': 'NONE', 'slug': 'market_slug'}
 
 ## daily_aligned
 
@@ -51,10 +51,10 @@ Timestamp coverage (footer statistics): ['2024-12-30T00:00:02Z', '2026-04-28T11:
 | p_event | required | **FOUND** | p_event | float | - | §3: p_r = p_event, reference-outcome price in (0,1) |  |
 | direction_D | required | **FOUND** | D | int | taker_direction | §3: D_r aggressor direction in {+1,-1} on the reference axis |  |
 | outcome_seq | required | **FOUND** | outcome_seq | int | outcome_label, winning_outcome_label | §2.1 p_event definition; §5.3 outcome_seq <-> CTF slot mapping (checked at K0) |  |
-| shares | one-of-shares | **MISSING** | - | - | - | §3: q_r from a share-quantity column if present (OrderFilled has token_amount, §2.1) |  |
+| shares | one-of-shares | **CONFIRMED_ABSENT** | - | - | - | §3: q_r from a share-quantity column if present (OrderFilled has token_amount, §2.1) | owner confirmed: no column carries this role |
 | usdc_amount | required-k0 | **FOUND** | usdc_amount | float | fee_usdc | §3 q_r fallback usdc_amount/price; §7 matching on (token, maker, taker, USDC amount) |  |
 | price | one-of-shares | **FOUND** | price | float | - | §3 q_r fallback usdc_amount/price; §2.1 p_event = price or 1 - price |  |
-| token_id | required-k0 | **CANDIDATES** | - | - | asset_id | §7 matching on token ID; token -> (condition, slot) | no column with the spec's name; owner must confirm or reject |
+| token_id | required-k0 | **CONFIRMED** | asset_id | string | asset_id | §7 matching on token ID; token -> (condition, slot) | owner-confirmed mapping |
 | maker | required-k0 | **FOUND** | maker | string | maker_base_fee | §7 matching on maker |  |
 | taker | required-k0 | **FOUND** | taker | string | taker_base_fee | §7 matching on taker |  |
 | taker_direction | optional | **FOUND** | taker_direction | string | - | §2.1 D = sign(taker_direction) x (+-1 by outcome_seq); compared at K0 |  |
@@ -66,7 +66,7 @@ Timestamp coverage (footer statistics): ['2024-12-30T00:00:02Z', '2026-04-28T11:
 | category | metadata | **FOUND** | category | string | category_refined | §4.3 S_short category/tags; §8.6 category segment |  |
 | tags | metadata | **MISSING** | - | - | - | §4.3 S_short category/tags |  |
 | question | metadata | **MISSING** | - | - | - | §4.3 S_short regex on question |  |
-| slug | metadata | **CANDIDATES** | - | - | market_slug | §4.3 S_short regex on slug | no column with the spec's name; owner must confirm or reject |
+| slug | metadata | **CONFIRMED** | market_slug | string | market_slug | §4.3 S_short regex on slug | owner-confirmed mapping |
 | scheduled_end | metadata | **MISSING** | - | - | - | §4.3 originally scheduled end time; §8.6 time-to-end segment |  |
 
 ## CTF
@@ -103,17 +103,4 @@ Variant 1 (1 files, None .. None): `id`: string, `stakeholder`: string, `collate
 
 ## SPEC IMPLEMENTATION BLOCKERS
 
-### token_id
-- Frozen rule: §7 matching on token ID; token -> (condition, slot)
-- Problem: role is CANDIDATES; candidates: asset_id (no column with the spec's name; owner must confirm or reject)
-- Smallest resolution: Owner confirms a candidate with --confirm token_id=<column> if it carries exactly this meaning; otherwise: Amend §7 matching to (condition_id, outcome_seq) after a chain-side token -> (condition, slot) derivation.
-- Amendment: No, if the owner confirms a candidate with identical meaning; otherwise yes.
-- Available fields: D: int8, asset_id: large_string, block_timestamp: int64, category: large_string, category_refined: large_string, close_at: timestamp[us, tz=UTC], condition_id: large_string, fee_usdc: double, maker: large_string, maker_base_fee: double, market_slug: large_string, neg_risk: large_string, opens_at: timestamp[us, tz=UTC], outcome_label: large_string, outcome_seq: int64, p_event: double, price: double, resolution_status: large_string, resolved_at: timestamp[us, tz=UTC], taker: large_string, taker_base_fee: double, taker_direction: large_string, usdc_amount: double, winning_outcome_label: large_string
-
-### shares
-- Frozen rule: §3 q_r: a share-quantity column if daily_aligned has one; otherwise usdc_amount / price
-- Problem: share role unresolved (MISSING; no heuristic candidate, which does not show that none exists)
-- Smallest resolution: Owner states which column is the share quantity (--confirm shares=<column>) or that none exists (--confirm shares=NONE); units and gross/net are checked at K0.
-- Amendment: No
-- Available fields: D: int8, asset_id: large_string, block_timestamp: int64, category: large_string, category_refined: large_string, close_at: timestamp[us, tz=UTC], condition_id: large_string, fee_usdc: double, maker: large_string, maker_base_fee: double, market_slug: large_string, neg_risk: large_string, opens_at: timestamp[us, tz=UTC], outcome_label: large_string, outcome_seq: int64, p_event: double, price: double, resolution_status: large_string, resolved_at: timestamp[us, tz=UTC], taker: large_string, taker_base_fee: double, taker_direction: large_string, usdc_amount: double, winning_outcome_label: large_string
-
+None found by the schema check.
