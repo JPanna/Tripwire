@@ -1,7 +1,8 @@
 # R0 progress checkpoint — 2026-10-08
 
 A record of where R0 stands (first written 2026-10-07; updated 2026-10-08 after
-Stage C schema inspection cleared). It changes nothing: the governing texts are `docs/RISK_INVARIANTS.md`,
+Stage C schema inspection cleared, and again after the pre-holdout acquisition
+and the exploration-only metadata vocabulary). It changes nothing: the governing texts are `docs/RISK_INVARIANTS.md`,
 `PREREGISTRATION.md` (frozen), `docs/DECISIONS.md` and `DATA_ACCESS.md`.
 
 ## 1. Project state and architecture
@@ -71,7 +72,18 @@ Stage C schema inspection cleared). It changes nothing: the governing texts are 
 | Minimum acquisition (card + CTF + pre-holdout) | | 639,046,250 |
 
 `CTF/preparations`, `splits`, `merges`, `redemptions`, `OrderFilled/` and
-`daily_aligned_multi/` are not needed. Nothing has been downloaded.
+`daily_aligned_multi/` are not needed.
+
+**Pre-holdout acquisition (2026-10-08, owner-authorized, ephemeral):**
+`00_fetch.py --download pre-holdout --approve-bytes 546269510` (exit 0) and
+`00_fetch.py --verify --part pre-holdout` (exit 0: 282 files verified against
+upstream SHA-256, 0 mismatches, 0 missing). 282 files / 546,269,510 bytes, all
+`daily_aligned` 2024-12-30 .. 2025-10-07; no holdout, CTF, `OrderFilled/` or
+`daily_aligned_multi/` file acquired; no partial downloads. The raw cache
+(`data/raw/TimeSeventeen__Polymarket-v1@5aa1b9d…/`) is Git-ignored and lives
+only in the cloud session's **ephemeral** container: it is **not preserved in
+GitHub** and is gone when the container is reclaimed. Each later session that
+needs rows must re-download and re-verify (Option 1, owner, 2026-10-08).
 
 ## 5. Schema findings (`SCHEMA_REPORT.json`/`.md`, remote footers only)
 
@@ -137,13 +149,17 @@ Unresolved (none confirmed; none blocks Stage C):
 ## 8. Not implemented and not authorized
 
 - Polygon RPC client, A2 scoped CTF loader, header cache, B\* determination.
-- Any download (pre-holdout, holdout, CTF); CTF downloads are disabled in code.
-- vocab and domain checks; K0; event detection (Stage D, and not before the
-  S_short amendment is re-frozen); outcomes, SSTR, statistics; any holdout read.
+- Any download other than the authorized pre-holdout part (holdout, CTF);
+  CTF downloads are disabled in code.
+- Domain checks; S_short membership, durations and classifier evaluation; K0;
+  event detection (Stage D, and not before the S_short amendment is re-frozen);
+  outcomes, SSTR, statistics; any holdout read.
 - Freezing A1/A2; role confirmations beyond the three above; any change to
   `PREREGISTRATION.md`.
-- Status: no research corpus has been downloaded; no K0, event detection,
-  outcome, SSTR or statistical analysis has been performed.
+- Status: only the 282 pre-holdout files were acquired (ephemeral cache);
+  the exploration-only metadata vocabulary was run (§11). No holdout or CTF
+  data was acquired; no K0, event detection, outcome, SSTR or statistical
+  analysis has been performed.
 - Any execution, order, wallet or trading code (never in R0).
 
 ## 9. Recommended next steps (each needs owner authorization)
@@ -151,8 +167,10 @@ Unresolved (none confirmed; none blocks Stage C):
 1. Owner decisions on scheduled_end, the S_short metadata source
    (category/slug vs. Gamma snapshot) and neg_risk; re-run the schema step
    with any new confirmations (remote).
-2. Approve `--download pre-holdout --approve-bytes 546269510` (and the card).
-3. Exploration-only vocab and domain checks; revise and audit A1.
+2. Decide the S_short metadata questions in `S_SHORT_VOCAB_FINDINGS.md`;
+   revise A1 accordingly (category token set + slug regex, or a Gamma
+   snapshot); then an authorized classifier audit and domain checks (each in a
+   session that re-downloads and re-verifies the pre-holdout part).
 4. Verify Polygon/Bor timestamp ordering; then implement the A2 RPC client and
    scoped CTF loader for independent review; enable the CTF download only after
    acceptance.
@@ -173,3 +191,17 @@ Unresolved (none confirmed; none blocks Stage C):
   credentials, no outcomes and no row/row-group counts; the only holdout-derived
   values are file placement (per-file footer block-timestamp min/max, sizes,
   hashes), which ADR-0025 authorizes.
+
+## 11. Exploration-only metadata vocabulary (2026-10-08)
+
+- Command: `01_schema.py vocab --source local --sample-every 1` (exit 0, no
+  classifier). Rows restricted to 2025-01-01 .. 2025-09-30 UTC; trailing 2024
+  and embargo rows excluded; holdout never read. Columns: `condition_id`,
+  `block_timestamp` (filter), `category`, `market_slug`.
+- Findings and provenance (output SHA-256s):
+  `S_SHORT_VOCAB_FINDINGS.md`. 44,275 exploration markets; `category` is one
+  tag-like label per market (528 values, none null, no within-market
+  variation); `market_slug` never null; `question`/`tags` absent.
+- Open: crypto token set (format labels such as `Up or Down`/`1H`; `DOGE` is
+  not Dogecoin), crypto-themed non-price labels, `category_refined`,
+  scheduled end. A1 and A2 remain proposed and unfrozen.
