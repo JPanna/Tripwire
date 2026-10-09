@@ -1,0 +1,48 @@
+# PROVISIONAL A1 candidate classifier: S_short metadata ("marked as crypto") condition.
+# Status: DRAFT for audit only. NOT frozen, NOT A1, NOT used by any event logic.
+# Built from the exploration-only vocabulary (S_SHORT_VOCAB_FINDINGS.md), dataset
+# TimeSeventeen/Polymarket-v1 @ 5aa1b9d52316a8b2e789e81c8ae42c7ed532e8aa.
+#
+# Rule: crypto-related iff (category_token_match OR slug_match).
+#   category_token_match: the whole `category` value, stripped and casefolded,
+#                         equals one entry of category_tokens (exact equality, never a substring).
+#   slug_match:           re.search(pattern, market_slug) for any slug_patterns entry
+#                         (Python 3.12 `re`, re.ASCII, case-sensitive; slugs are lowercase).
+# Not inputs: category_refined (audit challenge signal only), question/tags (absent),
+# close_at, durations, prices, quantities, outcomes.
+
+version = "a1-candidate-v1"
+
+# Generic crypto labels and coin/asset names (provisionally approved; LTC added).
+category_tokens = [
+  "crypto", "crypto prices",
+  "bitcoin", "ethereum", "solana", "xrp", "ripple", "dogecoin", "cardano", "ltc",
+  "eth", "sol", "fartcoin", "hyperliquid", "pepe",
+]
+
+# Never a positive by category alone (they can still match via slug_patterns).
+excluded_category_labels = [
+  "doge",  # US "Department of Government Efficiency" in exploration examples
+  # product / format / UI labels with no independent crypto meaning
+  "up or down", "recurring", "recurrig", "hide from new", "1h", "4h", "15m",
+  "daily", "weekly", "monthly", "multi strikes", "hit price", "today 🚀",
+  "prices", "featured", "trending markets", "all", "now", "pre-market",
+]
+
+# Crypto-themed or crypto-looking labels: undecided, full census in audit stratum S4.
+undecided_category_labels = [
+  "memecoins", "airdrops", "crypto summit", "crypto policy", "stablecoins",
+  "tether", "usdc", "coinbase", "bybit", "bybit hack", "opensea", "pump.fun",
+  "ethena", "monad", "lighter", "base", "microstrategy", "mstr", "metaplanet",
+  "michael saylor", "sbf", "sam bankman-fried", "ansem", "$trump", "$yzy", "yzy",
+  "$libra", "exchange",
+]
+
+# Bounded, asset-specific price/direction slug families. No bare "up-or-down", no "doge".
+slug_patterns = [
+  '^(?:bitcoin|btc|ethereum|eth|solana|sol|xrp|dogecoin|hyperliquid|fartcoin|ethbtc|soleth)-up-or-down-',
+  '^(?:btc|eth|sol|xrp)-multistrike-',
+  '^(?:bitcoin|ethereum|solana|xrp|dogecoin)-above-',
+  '^will-(?:bitcoin|btc|ethereum|eth|solana|sol|xrp|dogecoin)-(?:reach|dip-to|hit)-',
+  '^bitcoin-and-ethereum-up-on-',
+]
