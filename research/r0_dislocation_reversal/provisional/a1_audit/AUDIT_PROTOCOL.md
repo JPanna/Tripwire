@@ -12,6 +12,18 @@ documentation findings only: the false-negative example list (§1), the
 recall ambiguity bounds (§7) and the confidence-interval wording (§7).
 Acceptance thresholds and scoring rules are unchanged.
 
+Revision: v1.3 (2026-10-11). **Reviewer-method amendment** (owner-authorized):
+the reviewers in §3 change from independent humans to an AI-assisted,
+human-supervised hybrid, specified in `AI_ASSISTED_REVIEW_ADDENDUM.md`. Only
+§3 changes. Unchanged: sampling and population definitions, the 865-market
+worksheet and its SHA-256, the category tokens and slug patterns, the rubric's
+semantic rules, every acceptance threshold, the S4/S5 census gates,
+conservative UNRESOLVED scoring and the single classifier-revision rule. This
+amendment is **not** a classifier revision and does not consume the single
+revision round (§6). The independent (Codex) acceptance of v1.1 evaluated the
+**human**-review protocol. The hybrid substitution is a later methodological
+change that needs its own documented approval (see the addendum).
+
 Status: draft for owner approval. Nothing here is labelled, evaluated, accepted
 or frozen. A1, A2, the code and `PREREGISTRATION.md` are unchanged. The
 `close_at` scheduled-end meaning stays UNCONFIRMED (owner decision), and the
@@ -105,34 +117,57 @@ The worksheet does not reveal the stratum, the classifier prediction or
 shown by design, so a reviewer can partly infer token matches; this is
 unavoidable with the available metadata.)
 
-## 3. Manual labelling (independent human review)
+## 3. Labelling (AI-assisted, human-supervised; amended in v1.3)
+
+**Method.** Reviewer roles, isolation, packets, output schemas, integrity
+checks and the adjudication format are specified in
+`AI_ASSISTED_REVIEW_ADDENDUM.md`, which is binding:
+- Primary: a fresh isolated Claude session.
+- Secondary: a fresh isolated Codex session.
+- Adjudication: the human owner, assisted with neutral plain-English case
+  cards. The owner is **not** treated as a cryptocurrency domain expert.
+- Coordinator: Claude Code (packets, validation, sequencing, records, later
+  scoring).
+
+AI reviewers are labelling aids. They are not human reviewers, independent
+human experts or ground truth.
 
 **Rubric.** `LABELING_RUBRIC.md` defines labels A and B and the YES / NO /
 UNRESOLVED criteria. It is binding for every reviewer and for adjudication.
 
-**Blinding.** Reviewers receive only `A1_AUDIT_WORKSHEET_BLINDED.csv` and
-`LABELING_RUBRIC.md`. They never see the unblinded key, the strata, the
-classifier predictions or `category_refined`. They may use general public
-knowledge of what a name means, but must not look up the market itself, its
-prices or its outcome. Insufficient evidence in the provided metadata means
-UNRESOLVED, never an inferred answer.
+**Blinding.** Reviewers receive only a standalone packet built from
+`A1_AUDIT_WORKSHEET_BLINDED.csv` (or the assigned subset of its rows) and
+`LABELING_RUBRIC.md`.
+- They never see the unblinded key, the strata, the classifier or its
+  predictions, `category_refined`, earlier research analysis, prices, trading
+  data or outcomes. The secondary reviewer also never sees primary answers.
+- A full repository session does not count as isolated. Reviewer sessions run
+  without repository access, without web or market lookups, and without
+  memory of this project.
+- Insufficient evidence in the provided metadata means UNRESOLVED, never an
+  inferred answer.
 
-**Sequence** (each step is completed and its file SHA-256-recorded before the
-next step starts):
+**Sequence** (each step is completed, validated and its file
+SHA-256-recorded before the next step starts):
 
-1. **Primary review.** One reviewer labels A and B for all 865 rows.
-2. **Second review.** Only after step 1 is finished, a second reviewer receives
-   one combined, shuffled list of review ids, without the primary's answers.
-   The list contains (a) every item the primary labelled UNRESOLVED on A or B,
-   and (b) the existing deterministic QA sample: the first 87 review ids in
-   SHA-256(`a1-audit-v1-qa|review_id`) order (10%). The second reviewer labels
-   them independently.
+1. **Primary review.** The primary reviewer labels A and B for all 865 rows.
+2. **Second review.** Only after step 1 is finalized, the coordinator builds
+   the secondary packet: one combined list of original review ids, ordered by
+   SHA-256(`a1-audit-v1-secondary-order|review_id`), with neither the primary's
+   answers nor the selection reason. The list contains (a) every item the
+   primary labelled UNRESOLVED on A or B, and (b) the existing deterministic QA
+   sample: the first 87 review ids in SHA-256(`a1-audit-v1-qa|review_id`)
+   order (10%). The secondary reviewer labels them independently.
 3. **Adjudication.** The owner adjudicates every disagreement and every item
-   either reviewer left UNRESOLVED, with a written reason per item. The
-   adjudicated label may itself be UNRESOLVED, and is then scored
-   conservatively (§4). Nothing is resolved silently.
-4. **Unblinding.** Only after adjudication is complete is the key opened and
-   are §4 and §5 applied. No scoring happens before adjudication.
+   either reviewer left UNRESOLVED, using the addendum's case cards, with a
+   written reason per item. There is no majority vote between models, and no
+   knowledge is fabricated. Cases needing specialist expertise are escalated or
+   stay UNRESOLVED. The adjudicated label may itself be UNRESOLVED and is then
+   scored conservatively (§4). Nothing is resolved silently. The owner approves
+   every final adjudication.
+4. **Unblinding.** Only after adjudication is complete and owner-approved is
+   the key opened and are §4 and §5 applied. No scoring happens before
+   adjudication.
 
 ## 4. Scoring and acceptance gates (fixed before any evaluation)
 
