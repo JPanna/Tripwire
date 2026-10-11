@@ -6,6 +6,12 @@ census gates) and adds the labelling rubric, the single-revision procedure and
 honest sampling-uncertainty reporting. Classifier, selection script, worksheet,
 key, hashes, salts and strata are unchanged.
 
+Revision: v1.2 (2026-10-11). Independent (Codex) final review: ACCEPT A1 v1.1
+FOR BLINDED LABELING; both MAJOR findings closed. v1.2 corrects three MINOR
+documentation findings only: the false-negative example list (§1), the
+recall ambiguity bounds (§7) and the confidence-interval wording (§7).
+Acceptance thresholds and scoring rules are unchanged.
+
 Status: draft for owner approval. Nothing here is labelled, evaluated, accepted
 or frozen. A1, A2, the code and `PREREGISTRATION.md` are unchanged. The
 `close_at` scheduled-end meaning stays UNCONFIRMED (owner decision), and the
@@ -50,8 +56,8 @@ not only crypto-price markets.
 - **False negatives:**
   - crypto markets under format/UI or topical labels whose slug falls outside
     the bounded patterns (e.g. `fartcoin-above-…`, `hyperliquid-above-…`,
-    `what-will-btc-dominance-hit-first-…`, `will-btc-hit-100k-or-110k-first`,
-    `ethereum-all-time-high-before-2026`, `major-crypto-exchange-hack-in-2025`);
+    `what-will-btc-dominance-hit-first-…`, `ethereum-all-time-high-before-2026`,
+    `major-crypto-exchange-hack-in-2025`);
   - assets missing from the whitelist (bnb, sui, ton, link, avax, ada, ltc in
     slugs);
   - crypto "Mentions" markets (`will-trump-say-bitcoin-or-crypto-…`), which
@@ -273,20 +279,40 @@ The audit report must contain:
 - **Population-weighted estimates:** for each stratum h, population N_h,
   sample n_h and sampling fraction f_h = n_h / N_h (S4 and S5 have f = 1).
   The estimated crypto-related count is N_h · y_h / n_h. From these:
-  - estimated precision of the predicted-positive set = Σ_{S1–S3} estimated
-    count / Σ_{S1–S3} N_h;
-  - estimated missed count = Σ_{S4–S7} estimated count;
-  - estimated recall = positives / (positives + misses).
-  Each is computed twice, with UNRESOLVED as NO and as YES, giving bounds.
-- **Finite-population sampling uncertainty:** exact hypergeometric 95%
-  intervals for each sampled stratum's crypto-related count (censuses are
-  exact). Any combined interval must be labelled as approximate and its method
+  - estimated positive count P = Σ_{S1–S3} estimated count (crypto-related
+    markets the classifier predicts as positive);
+  - estimated precision of the predicted-positive set = P / Σ_{S1–S3} N_h;
+  - estimated missed count M = Σ_{S4–S7} estimated count;
+  - estimated recall = P / (P + M).
+- **Ambiguity sensitivity bounds** (adjudicated UNRESOLVED labels):
+  - P_L and P_U are P computed with UNRESOLVED counted as NO and as YES in
+    S1–S3. M_L and M_U are M computed with UNRESOLVED counted as NO and as YES
+    in S4–S7.
+  - Precision bounds: P_L / Σ_{S1–S3} N_h and P_U / Σ_{S1–S3} N_h.
+  - Recall bounds: **Lower = P_L / (P_L + M_U)** and
+    **Upper = P_U / (P_U + M_L)**.
+  - Counting UNRESOLVED as NO everywhere, then as YES everywhere, does **not**
+    bound recall, because it moves P and M in the same direction.
+  - Zero denominators are reported explicitly: if P_L + M_U = 0 (or
+    P_U + M_L = 0), that recall bound is "undefined (no estimated
+    crypto-related markets)", never 0 or 1.
+  - These bounds show sensitivity to label ambiguity only. They are **not**
+    statistical confidence intervals and contain no sampling uncertainty.
+    Conversely, the confidence intervals below do not include label
+    ambiguity.
+- **Finite-population sampling uncertainty:** exact two-sided 95%
+  equal-tail hypergeometric confidence intervals for each sampled stratum's
+  crypto-related count (censuses are exact). A one-sided bound, if reported,
+  must be labelled one-sided. Any combined interval must be labelled as approximate and its method
   stated.
 - **Disclosure:** S7 samples only 200 of 21,152 markets (f ≈ 0.95%).
   - Illustration (synthetic; Codex's point): 1 observed miss in 200 is
     compatible with many more unseen misses in S7. The point estimate is about
-    106, and the exact hypergeometric 95% upper bound is about 580 markets.
-  - Even 0 observed misses leaves an upper bound of about 384.
+    106. The exact two-sided 95% equal-tail hypergeometric confidence interval
+    has an upper endpoint of about 580 markets; the corresponding one-sided 95%
+    upper bound is 495.
+  - Even 0 observed misses leaves a two-sided 95% upper endpoint of about 384;
+    the corresponding one-sided 95% upper bound is 312.
 - **Prohibited claims:** no claim of near-perfect global recall, no
   duration-qualified S_short recall, no event-weighted recall. The stratum
   thresholds are acceptance gates, not global guarantees. The audit concerns
