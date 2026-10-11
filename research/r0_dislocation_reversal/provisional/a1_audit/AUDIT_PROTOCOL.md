@@ -24,6 +24,13 @@ revision round (§6). The independent (Codex) acceptance of v1.1 evaluated the
 **human**-review protocol. The hybrid substitution is a later methodological
 change that needs its own documented approval (see the addendum).
 
+Revision: v1.4 (2026-10-11). **The owner approved the hybrid review**, with one
+reviewer substitution: the secondary reviewer is GPT-6 (or the model actually
+available, as recorded in the interface) in a fresh, unpersonalized ChatGPT
+Temporary Chat, replacing the previously planned Codex session. This is a
+reviewer-method amendment, not a classifier revision. Only the secondary role
+in §3 changes; everything listed under v1.3 stays unchanged.
+
 Status: draft for owner approval. Nothing here is labelled, evaluated, accepted
 or frozen. A1, A2, the code and `PREREGISTRATION.md` are unchanged. The
 `close_at` scheduled-end meaning stays UNCONFIRMED (owner decision), and the
@@ -123,7 +130,9 @@ unavoidable with the available metadata.)
 checks and the adjudication format are specified in
 `AI_ASSISTED_REVIEW_ADDENDUM.md`, which is binding:
 - Primary: a fresh isolated Claude session.
-- Secondary: a fresh isolated Codex session.
+- Secondary: GPT-6 (or the model actually available, as recorded in the
+  interface) in a fresh, unpersonalized ChatGPT Temporary Chat. It receives
+  only the blinded secondary CSV, the rubric and the secondary prompt.
 - Adjudication: the human owner, assisted with neutral plain-English case
   cards. The owner is **not** treated as a cryptocurrency domain expert.
 - Coordinator: Claude Code (packets, validation, sequencing, records, later

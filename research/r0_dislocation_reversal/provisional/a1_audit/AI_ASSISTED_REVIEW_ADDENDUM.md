@@ -1,8 +1,8 @@
 # A1 audit: AI-assisted, human-supervised review addendum (PROVISIONAL)
 
-Status: reviewer-method amendment to `AUDIT_PROTOCOL.md` (v1.3, §3), prepared
-2026-10-11. **No labelling has begun.** The amendment needs its own documented
-approval before any reviewer starts.
+Status: reviewer-method amendment to `AUDIT_PROTOCOL.md` (v1.3, §3; secondary
+reviewer substituted in v1.4), prepared 2026-10-11. **Owner-approved
+2026-10-11** (§1). **No labelling has begun.**
 
 ## 1. Authorization and scope
 
@@ -11,6 +11,13 @@ approval before any reviewer starts.
   explicitly documented AI-assisted, human-supervised hybrid, and preparing the
   isolated reviewer packages. The owner did **not** authorize assigning labels
   or starting any AI review run in that step.
+- **Owner approval (2026-10-11):** the owner approved this AI-assisted hybrid
+  audit with one modification. The secondary reviewer is **GPT-6 in a fresh,
+  unpersonalized ChatGPT Temporary Chat**, replacing the previously planned
+  Codex session. If GPT-6 is not available, the model actually selected is used
+  and recorded. This substitution is a reviewer-method amendment, not a
+  classifier revision. The primary Claude packet and all its hashes are
+  unchanged.
 - **Relation to earlier acceptance:** the independent (Codex) verdict "ACCEPT
   A1 v1.1 FOR BLINDED LABELING" evaluated the **human**-review protocol. This
   hybrid substitution is a later methodological change and is covered by that
@@ -31,7 +38,7 @@ approval before any reviewer starts.
 | Role | Who | Sees | Does not see |
 | --- | --- | --- | --- |
 | Primary reviewer | a fresh, isolated Claude session | primary packet (all 865 rows: review id, category, slug) + rubric + prompt | repository; classifier or its predictions; key; strata; `category_refined`; earlier analyses; prices, trades, outcomes; web |
-| Secondary reviewer | a fresh, isolated Codex session | secondary packet (assigned rows only) + rubric + prompt | all of the above, **plus** primary answers and why each row was selected |
+| Secondary reviewer | GPT-6 (or the model actually available, recorded from the interface) in a fresh, unpersonalized ChatGPT Temporary Chat | ONLY the blinded secondary CSV (assigned rows), the rubric and the isolated secondary prompt | all of the above, **plus** primary answers and why each row was selected; no Tripwire project context, repository, memory, custom instructions or plugins |
 | Case-card drafter | a fresh, isolated session with no repository (any assistant) | one card's id, category, slug, both reviewers' answers and reasons, rubric | everything restricted above |
 | Adjudicator | the human owner (not a crypto domain expert) | case cards | key, classifier, strata, `category_refined` until approved unblinding |
 | Coordinator | Claude Code (this repository) | everything needed for packets, validation, records, later scoring | — (it must **not** draft domain explanations, because it has classifier and research context) |
@@ -49,9 +56,18 @@ or people from memory.
 - Web search, browsing, connectors and code tools disabled or unused. No
   market-page, price, result or outcome lookups during labelling or
   adjudication.
-- A full repository session (e.g. Codex or Claude Code with the repo) is **not**
-  an isolated reviewer environment. The secondary Codex session must run
-  without this repository attached.
+- A full repository session (e.g. a coding agent with the repo attached) is
+  **not** an isolated reviewer environment.
+- **Secondary session (ChatGPT):**
+  - a new Temporary Chat, unpersonalized: no memory, no custom instructions,
+    no project or Tripwire context, no plugins, apps or connectors, no web
+    search or browsing, and no earlier reviewer answers;
+  - uploads limited to the blinded secondary CSV and the rubric, plus the
+    pasted secondary prompt;
+  - the owner records the model selected in the model picker (GPT-6 if
+    available) and confirms these settings in the interface at run time;
+  - these product settings are as stated by the owner and were not verified
+    by the coordinator.
 - **Run record**, kept by the owner for every session:
   - product and model as displayed in its interface, and the version if shown;
   - date and time (UTC) of start and end;
